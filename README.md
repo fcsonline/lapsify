@@ -5,6 +5,7 @@ A powerful time-lapse image processor written in Rust that can process images wi
 ## Features
 
 - **Image Processing**: Apply exposure, brightness, contrast, and saturation adjustments
+- **Cropping**: Crop images with pixel or percentage-based coordinates
 - **Interpolation**: Smooth transitions between parameter values across frames
 - **Multiple Output Formats**: Generate processed images (JPG, PNG, TIFF) or videos (MP4, MOV, AVI)
 - **Video Creation**: Direct video output using FFmpeg with customizable quality and frame rate
@@ -45,11 +46,33 @@ cargo run --release -- -i /path/to/images -o /path/to/output -f jpg
 - `-b, --brightness <VALUE>`: Brightness adjustment (-100 to +100)
 - `-c, --contrast <VALUE>`: Contrast multiplier (0.1 to 3.0)
 - `-s, --saturation <VALUE>`: Saturation multiplier (0.0 to 2.0)
+- `--crop <WIDTH:HEIGHT:X:Y>`: Crop parameters in FFmpeg format (e.g., '1000:800:100:50' or '50%:50%:10%:10%')
 - `-f, --format <FORMAT>`: Output format (jpg, png, tiff, mp4, mov, avi)
 - `-r, --fps <RATE>`: Frame rate for video output (1-120 fps)
 - `-q, --quality <CRF>`: Video quality (0-51, lower = better)
 - `--resolution <WIDTHxHEIGHT>`: Output video resolution
 - `-t, --threads <NUM>`: Number of threads to use for processing (default: auto-detect)
+
+### Cropping
+
+Crop images using FFmpeg-style crop parameters:
+
+```bash
+# Crop with pixel coordinates (width:height:x:y)
+cargo run --release -- -i images/ -o output/ --crop="600:400:100:50" -f mp4
+
+# Crop with percentage coordinates
+cargo run --release -- -i images/ -o output/ --crop="50%:50%:10%:10%" -f mp4
+
+# Crop from right/bottom using negative offsets
+cargo run --release -- -i images/ -o output/ --crop="600:400:-100:-100" -f mp4
+```
+
+**Crop Format:** `width:height:x:y`
+- **Width/Height**: Output dimensions in pixels or percentages
+- **X/Y**: Offset coordinates in pixels or percentages
+- **Percentages**: Values like '50%' are calculated relative to image dimensions
+- **Negative Offsets**: Useful for cropping from the right or bottom edges
 
 ### Parameter Arrays
 
@@ -94,6 +117,12 @@ cargo run --release -- -i photos/ -o video/ -f mp4 -r 24 -q 18 --resolution 4K
 
 # Use specific number of threads for processing
 cargo run --release -- -i photos/ -o video/ -f mp4 -t 8
+
+# Crop to center 50% of the image
+cargo run --release -- -i photos/ -o video/ --crop="50%:50%:25%:25%" -f mp4
+
+# Crop from right side (remove 200 pixels from right)
+cargo run --release -- -i photos/ -o video/ --crop="600:600:0:0" -f mp4
 
 ## Performance
 

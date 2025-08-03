@@ -34,6 +34,7 @@ struct ImageAdjustments {
     brightness: Vec<f32>,
     contrast: Vec<f32>,
     saturation: Vec<f32>,
+    crop: Option<String>,
 }
 
 // Implement Send and Sync for ImageAdjustments to make it thread-safe
@@ -47,6 +48,7 @@ impl Default for ImageAdjustments {
             brightness: vec![0.0],   // -100 to +100
             contrast: vec![1.0],     // 0.0 to 2.0 (1.0 = no change)
             saturation: vec![1.0],   // 0.0 to 2.0 (1.0 = no change)
+            crop: None,               // Crop string in format "width:height:x:y"
         }
     }
 }
@@ -70,6 +72,47 @@ fn parse_value_array(input: &str) -> Result<Vec<f32>, Box<dyn Error>> {
         .collect::<Result<Vec<f32>, _>>()
         .map_err(|e| format!("Failed to parse value array: {}", e).into())
 }
+
+#[derive(Debug, Clone)]
+struct CropParams {
+    width: f32,
+    height: f32,
+    x: f32,
+    y: f32,
+}
+
+fn parse_crop_string(input: &str) -> Result<CropParams, Box<dyn Error>> {
+    let parts: Vec<&str> = input.split(':').collect();
+    if parts.len() != 4 {
+        return Err(format!("Crop string must have 4 parts (width:height:x:y), got {} parts", parts.len()).into());
+    }
+    
+    let width = parse_crop_value(parts[0])?;
+    let height = parse_crop_value(parts[1])?;
+    let x = parse_crop_value(parts[2])?;
+    let y = parse_crop_value(parts[3])?;
+    
+    Ok(CropParams { width, height, x, y })
+}
+
+fn parse_crop_value(input: &str) -> Result<f32, Box<dyn Error>> {
+    let input = input.trim();
+    if input.ends_with('%') {
+        let percentage = input[..input.len()-1].parse::<f32>()
+            .map_err(|_| format!("Invalid percentage value: {}", input))?;
+        if percentage < 0.0 || percentage > 100.0 {
+            return Err(format!("Percentage must be between 0 and 100: {}", input).into());
+        }
+        Ok(percentage)
+    } else {
+        let pixels = input.parse::<f32>()
+            .map_err(|_| format!("Invalid pixel value: {}", input))?;
+        // Allow negative values for crop offsets (they indicate offset from right/bottom)
+        Ok(pixels)
+    }
+}
+
+
 
 fn calculate_frame_padding(total_frames: usize) -> usize {
     // Calculate the number of digits needed for the largest frame number
@@ -336,6 +379,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("Start frame index (0-based, inclusive). Default: 0 (first frame)"),
         )
         .arg(
+            Arg::new("crop")
+                .long("crop")
+                .value_name("WIDTH:HEIGHT:X:Y")
+                .help("Crop parameters in FFmpeg format (e.g., '1000:800:100:50' or '50%:50%:10%:10%')"),
+        )
+        .arg(
             Arg::new("end-frame")
                 .long("end-frame")
                 .value_name("INDEX")
@@ -387,6 +436,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         brightness: parse_value_array(matches.get_one::<String>("brightness").unwrap())?,
         contrast: parse_value_array(matches.get_one::<String>("contrast").unwrap())?,
         saturation: parse_value_array(matches.get_one::<String>("saturation").unwrap())?,
+        crop: matches.get_one::<String>("crop").cloned(),
     };
 
     // Validate parameters
@@ -416,6 +466,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     print_value_array("Brightness", &adjustments.brightness, "");
     print_value_array("Contrast", &adjustments.contrast, "x");
     print_value_array("Saturation", &adjustments.saturation, "x");
+    
+    // Print crop settings
+    if let Some(ref crop_str) = adjustments.crop {
+        println!("  {}: {}", "Crop".green(), crop_str);
+    }
     
     if threads > 0 {
         println!("  {}: {} (manual)", "Threads".green(), threads);
@@ -521,7 +576,8 @@ fn process_images_to_images(
             
             // Calculate global frame index for proper interpolation
             let global_frame_index = start_idx + i;
-            let processed_img = apply_adjustments(img, adjustments, global_frame_index, total_available_frames);
+            let processed_img = apply_adjustments(img, adjustments, global_frame_index, total_available_frames)
+                .map_err(|e| ProcessingError(format!("Failed to apply adjustments: {}", e)))?;
 
             let output_filename = generate_output_filename(image_path, output_format);
             let output_file_path = output_path.join(output_filename);
@@ -617,7 +673,89 @@ fn process_images_to_video(
     }
     
     // Validate resolution proportions and get calculated output resolution
+    // Note: Resolution validation is done on original images, but cropping happens during processing
     let calculated_resolution = validate_resolution_proportion(&filtered_files, resolution)?;
+    
+    // If cropping is specified, we need to adjust the resolution calculation
+    // since the cropped images will have different dimensions
+    let final_resolution = if let Some(ref crop_str) = adjustments.crop {
+        // Get the first image to determine original dimensions
+        if let Some(first_image_path) = filtered_files.first() {
+            let img = image::open(first_image_path)?;
+            let (original_width, original_height) = img.dimensions();
+            
+            // Parse crop parameters to get cropped dimensions
+            let crop_params = parse_crop_string(crop_str)?;
+            
+            // Calculate actual cropped dimensions
+            let x_offset = if crop_params.x < 0.0 {
+                original_width as f32 + (crop_params.x / 100.0) * original_width as f32
+            } else {
+                crop_params.x
+            };
+            
+            let y_offset = if crop_params.y < 0.0 {
+                original_height as f32 + (crop_params.y / 100.0) * original_height as f32
+            } else {
+                crop_params.y
+            };
+            
+            let crop_w = if crop_params.width <= 0.0 {
+                original_width as f32 - x_offset
+            } else if crop_params.width <= 100.0 && crop_params.width > 0.0 {
+                (crop_params.width / 100.0) * original_width as f32
+            } else {
+                crop_params.width
+            };
+            
+            let crop_h = if crop_params.height <= 0.0 {
+                original_height as f32 - y_offset
+            } else if crop_params.height <= 100.0 && crop_params.height > 0.0 {
+                (crop_params.height / 100.0) * original_height as f32
+            } else {
+                crop_params.height
+            };
+            
+            let cropped_width = crop_w as u32;
+            let cropped_height = crop_h as u32;
+            
+            // Now validate resolution against cropped dimensions
+            if let Some((target_width, target_height)) = calculated_resolution {
+                let cropped_ratio = cropped_width as f32 / cropped_height as f32;
+                let target_ratio = target_width as f32 / target_height as f32;
+                
+                // Calculate final output dimensions maintaining aspect ratio
+                let final_width = if cropped_ratio > target_ratio {
+                    // Cropped image is wider, fit to height
+                    (target_height as f32 * cropped_ratio) as u32
+                } else {
+                    // Cropped image is taller, fit to width
+                    target_width
+                };
+                
+                let final_height = if cropped_ratio > target_ratio {
+                    target_height
+                } else {
+                    (target_width as f32 / cropped_ratio) as u32
+                };
+                
+                // Ensure even dimensions for H.264 compatibility
+                let final_width = if final_width % 2 != 0 { final_width + 1 } else { final_width };
+                let final_height = if final_height % 2 != 0 { final_height + 1 } else { final_height };
+                
+                println!("  {}: Cropped dimensions {}x{} -> Final output {}x{}", 
+                    "Resolution".green(), cropped_width, cropped_height, final_width, final_height);
+                
+                Some((final_width, final_height))
+            } else {
+                calculated_resolution
+            }
+        } else {
+            calculated_resolution
+        }
+    } else {
+        calculated_resolution
+    };
     
     println!("{}", "Processing images and creating video...".bold().cyan());
 
@@ -637,7 +775,8 @@ fn process_images_to_video(
             
             // Calculate global frame index for proper interpolation
             let global_frame_index = start_idx + i;
-            let processed_img = apply_adjustments(img, adjustments, global_frame_index, total_available_frames);
+            let processed_img = apply_adjustments(img, adjustments, global_frame_index, total_available_frames)
+                .map_err(|e| ProcessingError(format!("Failed to apply adjustments: {}", e)))?;
 
             // Save with dynamic sequential numbering for ffmpeg
             let temp_filename = format!("frame_{:0width$}.jpg", i + 1, width = frame_padding);
@@ -682,7 +821,7 @@ fn process_images_to_video(
         .arg("yuv420p");
 
     // Add resolution if specified
-    if let Some((output_width, output_height)) = calculated_resolution {
+    if let Some((output_width, output_height)) = final_resolution {
         ffmpeg_cmd.arg("-vf").arg(format!("scale={}:{}", output_width, output_height));
     }
 
@@ -722,16 +861,73 @@ fn is_image_file(path: &Path) -> bool {
     }
 }
 
-fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_index: usize, total_frames: usize) -> DynamicImage {
+fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_index: usize, total_frames: usize) -> Result<DynamicImage, ProcessingError> {
     let rgb_img = img.to_rgb8();
     let (width, height) = rgb_img.dimensions();
     
     // Get interpolated values for this frame
     let (exposure, brightness, contrast, saturation) = adjustments.get_values_at_frame(frame_index, total_frames);
     
-    let mut new_img = ImageBuffer::new(width, height);
+    // Apply cropping first if specified
+    let (start_x, start_y, end_x, end_y) = if let Some(ref crop_str) = adjustments.crop {
+        let crop_params = parse_crop_string(crop_str)
+            .map_err(|e| ProcessingError(format!("Failed to parse crop string: {}", e)))?;
+        
+        // Calculate crop coordinates
+        let x_offset = if crop_params.x < 0.0 {
+            // Negative values are percentages from the right
+            width as f32 + (crop_params.x / 100.0) * width as f32
+        } else {
+            crop_params.x
+        };
+        
+        let y_offset = if crop_params.y < 0.0 {
+            // Negative values are percentages from the bottom
+            height as f32 + (crop_params.y / 100.0) * height as f32
+        } else {
+            crop_params.y
+        };
+        
+        let crop_w = if crop_params.width <= 0.0 {
+            width as f32 - x_offset
+        } else if crop_params.width <= 100.0 && crop_params.width > 0.0 {
+            // Percentage
+            (crop_params.width / 100.0) * width as f32
+        } else {
+            crop_params.width
+        };
+        
+        let crop_h = if crop_params.height <= 0.0 {
+            height as f32 - y_offset
+        } else if crop_params.height <= 100.0 && crop_params.height > 0.0 {
+            // Percentage
+            (crop_params.height / 100.0) * height as f32
+        } else {
+            crop_params.height
+        };
+        
+        let start_x = x_offset as u32;
+        let start_y = y_offset as u32;
+        let end_x = (start_x + crop_w as u32).min(width);
+        let end_y = (start_y + crop_h as u32).min(height);
+        
+        (start_x, start_y, end_x, end_y)
+    } else {
+        // No cropping
+        (0, 0, width, height)
+    };
+    
+    let new_width = end_x - start_x;
+    let new_height = end_y - start_y;
+    
+    let mut new_img = ImageBuffer::new(new_width, new_height);
 
     for (x, y, pixel) in rgb_img.enumerate_pixels() {
+        // Skip pixels outside the crop area
+        if x < start_x || x >= end_x || y < start_y || y >= end_y {
+            continue;
+        }
+        
         let [r, g, b] = pixel.0;
         
         // Convert to float for processing
@@ -775,10 +971,13 @@ fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_in
         let new_g = (gf.clamp(0.0, 1.0) * 255.0) as u8;
         let new_b = (bf.clamp(0.0, 1.0) * 255.0) as u8;
 
-        new_img.put_pixel(x, y, Rgb([new_r, new_g, new_b]));
+        // Map to new image coordinates
+        let new_x = x - start_x;
+        let new_y = y - start_y;
+        new_img.put_pixel(new_x, new_y, Rgb([new_r, new_g, new_b]));
     }
 
-    DynamicImage::ImageRgb8(new_img)
+    Ok(DynamicImage::ImageRgb8(new_img))
 }
 
 fn generate_output_filename(input_path: &Path, output_format: &str) -> String {
