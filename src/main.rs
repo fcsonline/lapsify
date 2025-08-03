@@ -84,7 +84,7 @@ fn calculate_frame_padding(total_frames: usize) -> usize {
 fn validate_resolution_proportion(
     image_files: &[PathBuf],
     target_resolution: Option<&str>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Option<(u32, u32)>, Box<dyn Error>> {
     if let Some(res) = target_resolution {
         // Get the first image to determine original dimensions
         if let Some(first_image_path) = image_files.first() {
@@ -94,8 +94,23 @@ fn validate_resolution_proportion(
             // Parse target resolution
             let (target_width, target_height) = parse_resolution(res)?;
             
-            // Calculate aspect ratios
+            // Calculate the actual output width to maintain aspect ratio
+            // Keep the specified height, adjust width to preserve original aspect ratio
             let original_ratio = original_width as f32 / original_height as f32;
+            let mut output_width = (target_height as f32 * original_ratio) as u32;
+            
+            // Ensure width is even for H.264 compatibility
+            if output_width % 2 != 0 {
+                output_width += 1;
+            }
+            
+            // Ensure height is even for H.264 compatibility
+            let mut output_height = target_height;
+            if output_height % 2 != 0 {
+                output_height += 1;
+            }
+            
+            // Calculate aspect ratios for comparison
             let target_ratio = target_width as f32 / target_height as f32;
             
             // Check if aspect ratios are significantly different (within 5% tolerance)
@@ -104,23 +119,31 @@ fn validate_resolution_proportion(
             
             if ratio_difference > tolerance {
                 println!(
-                    "{}: Original aspect ratio ({:.2}:1) differs from target ({:.2}:1). This may cause distortion.",
+                    "{}: Original aspect ratio ({:.2}:1) differs from target ({:.2}:1). This may cause distortion. {}: {}x{}",
                     "Warning".yellow(),
                     original_ratio,
-                    target_ratio
+                    target_ratio,
+                    "Output resolution".yellow(),
+                    output_width,
+                    output_height
                 );
-                println!("  Original dimensions: {}x{}", original_width, original_height);
-                println!("  Target dimensions: {}x{}", target_width, target_height);
             } else {
                 println!(
-                    "{}: Aspect ratio validation passed ({:.2}:1)",
+                    "{}: Aspect ratio validation passed ({:.2}:1). {}: {}x{}",
                     "Resolution".green(),
-                    original_ratio
+                    original_ratio,
+                    "Output resolution".green(),
+                    output_width,
+                    output_height
                 );
             }
+            Ok(Some((output_width, output_height)))
+        } else {
+            Ok(None)
         }
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 fn parse_resolution(resolution: &str) -> Result<(u32, u32), Box<dyn Error>> {
@@ -593,8 +616,8 @@ fn process_images_to_video(
         println!("{} {} frames ({} to {})", "Processing".bold().blue(), total_files, start_idx, end_idx);
     }
     
-    // Validate resolution proportions
-    validate_resolution_proportion(&filtered_files, resolution)?;
+    // Validate resolution proportions and get calculated output resolution
+    let calculated_resolution = validate_resolution_proportion(&filtered_files, resolution)?;
     
     println!("{}", "Processing images and creating video...".bold().cyan());
 
@@ -659,14 +682,8 @@ fn process_images_to_video(
         .arg("yuv420p");
 
     // Add resolution if specified
-    if let Some(res) = resolution {
-        let res_str = match res.to_lowercase().as_str() {
-            "4k" => "3840x2160",
-            "hd" | "1080p" => "1920x1080",
-            "720p" => "1280x720",
-            _ => res, // Use as-is for custom resolutions like "1920x1080"
-        };
-        ffmpeg_cmd.arg("-vf").arg(format!("scale={}", res_str));
+    if let Some((output_width, output_height)) = calculated_resolution {
+        ffmpeg_cmd.arg("-vf").arg(format!("scale={}:{}", output_width, output_height));
     }
 
     ffmpeg_cmd.arg(&video_output_path);
