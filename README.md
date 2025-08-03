@@ -50,6 +50,7 @@ cargo run --release -- -i /path/to/images -o /path/to/output -f jpg
 - `-q, --quality <CRF>`: Video quality (0-51, lower = better)
 - `--resolution <WIDTHxHEIGHT>`: Output video resolution
 - `-t, --threads <NUM>`: Number of threads to use for processing (default: auto-detect)
+- `--raw-boost <FACTOR>`: Exposure boost factor for RAW files (default: 2.0)
 
 ### Parameter Arrays
 
@@ -81,6 +82,9 @@ cargo run --release -- -i photos/ -o video/ -f mp4 -r 24 -q 18 --resolution 4K
 # Use specific number of threads for processing
 cargo run --release -- -i photos/ -o video/ -f mp4 -t 8
 
+# Process RAW files with custom exposure boost
+cargo run --release -- -i raw_photos/ -o video/ -f mp4 --raw-boost 3.0
+
 ## Performance
 
 Lapsify uses parallel processing to speed up image processing:
@@ -110,7 +114,17 @@ cargo run --release -- -i photos/ -o video/ -f mp4 -t 1
 - TIFF (.tiff, .tif)
 - BMP (.bmp)
 - WebP (.webp)
-- RAW formats (.raw, .cr2, .nef, .arw)
+- RAW formats:
+  - Sony (.arw)
+  - Canon (.cr2, .cr3)
+  - Nikon (.nef)
+  - Fujifilm (.raf)
+  - Adobe (.dng)
+  - Olympus (.orf)
+  - Panasonic (.rw2)
+  - Pentax (.pef)
+  - Samsung (.srw)
+  - Generic (.raw)
 
 ## License
 

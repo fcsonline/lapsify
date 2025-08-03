@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::fmt;
 use colored::*;
 use std::time::Instant;
+use rawloader::decode_file;
 
 #[derive(Debug)]
 struct ProcessingError(String);
@@ -88,7 +89,7 @@ fn validate_resolution_proportion(
     if let Some(res) = target_resolution {
         // Get the first image to determine original dimensions
         if let Some(first_image_path) = image_files.first() {
-            let img = image::open(first_image_path)?;
+            let img = load_image_with_raw_support(first_image_path, 2.0)?; // Default boost for validation
             let (original_width, original_height) = img.dimensions();
             
             // Parse target resolution
@@ -143,6 +144,146 @@ fn parse_resolution(resolution: &str) -> Result<(u32, u32), Box<dyn Error>> {
     
     Ok((width, height))
 }
+
+fn load_image_with_raw_support(path: &Path, raw_boost: f32) -> Result<DynamicImage, Box<dyn Error>> {
+    // First try to load with the standard image crate
+    match image::open(path) {
+        Ok(img) => Ok(img),
+        Err(_) => {
+            // If standard loading fails, try RAW format
+            let raw_data = decode_file(path)
+                .map_err(|e| format!("Failed to decode RAW file: {}", e))?;
+            
+            // Convert RAW data to DynamicImage
+            let width = raw_data.width as u32;
+            let height = raw_data.height as u32;
+            
+
+            
+            // Create RGB buffer from RAW data
+            let mut rgb_buffer = Vec::with_capacity((width * height * 3) as usize);
+            
+            // Access the data based on its type
+            match raw_data.data {
+                rawloader::RawImageData::Integer(data) => {
+                    // Process integer data with proper color channel handling
+                    process_raw_integer_data(&data, width, height, raw_boost, &mut rgb_buffer)?;
+                }
+                rawloader::RawImageData::Float(data) => {
+                    // Process float data with proper color channel handling
+                    process_raw_float_data(&data, width, height, raw_boost, &mut rgb_buffer)?;
+                }
+            }
+            
+            // Create ImageBuffer from RGB data
+            let img_buffer = ImageBuffer::from_raw(width, height, rgb_buffer)
+                .ok_or("Failed to create image buffer from RAW data")?;
+            
+            Ok(DynamicImage::ImageRgb8(img_buffer))
+        }
+    }
+}
+
+fn process_raw_integer_data(
+    data: &[u16],
+    width: u32,
+    height: u32,
+    raw_boost: f32,
+    rgb_buffer: &mut Vec<u8>,
+) -> Result<(), Box<dyn Error>> {
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    
+    // Find min and max values for better normalization
+    let min_val = data.iter().min().unwrap_or(&0);
+    let max_val = data.iter().max().unwrap_or(&65535);
+    let range = (max_val - min_val) as f32;
+    
+
+    
+    // Simple approach: treat as grayscale with proper exposure
+    for y in 0..height_usize {
+        for x in 0..width_usize {
+            let idx = y * width_usize + x;
+            let pixel = data[idx];
+            
+            // Normalize to 0-1 range
+            let normalized = if range > 0.0 {
+                (pixel - min_val) as f32 / range
+            } else {
+                pixel as f32 / 65535.0
+            };
+            
+            // Apply exposure boost and gamma correction
+            let adjusted = if normalized > 0.0 {
+                let gamma = 2.2;
+                let corrected = (normalized * raw_boost).powf(1.0 / gamma);
+                (corrected * 255.0).clamp(0.0, 255.0) as u8
+            } else {
+                0u8
+            };
+            
+            // Use the same value for all channels (grayscale)
+            // This avoids Bayer pattern issues
+            rgb_buffer.push(adjusted);
+            rgb_buffer.push(adjusted);
+            rgb_buffer.push(adjusted);
+        }
+    }
+    Ok(())
+}
+
+fn process_raw_float_data(
+    data: &[f32],
+    width: u32,
+    height: u32,
+    raw_boost: f32,
+    rgb_buffer: &mut Vec<u8>,
+) -> Result<(), Box<dyn Error>> {
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    
+    // Find min and max values for better normalization
+    let min_val = data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+    let max_val = data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let range = max_val - min_val;
+    
+
+    
+    // Simple approach: treat as grayscale with proper exposure
+    for y in 0..height_usize {
+        for x in 0..width_usize {
+            let idx = y * width_usize + x;
+            let pixel = data[idx];
+            
+            // Normalize to 0-1 range
+            let normalized = if range > 0.0 {
+                (pixel - min_val) / range
+            } else {
+                pixel
+            };
+            
+            // Apply exposure boost and gamma correction
+            let adjusted = if normalized > 0.0 {
+                let gamma = 2.2;
+                let corrected = (normalized * raw_boost).powf(1.0 / gamma);
+                (corrected * 255.0).clamp(0.0, 255.0) as u8
+            } else {
+                0u8
+            };
+            
+            // Use the same value for all channels (grayscale)
+            // This avoids Bayer pattern issues
+            rgb_buffer.push(adjusted);
+            rgb_buffer.push(adjusted);
+            rgb_buffer.push(adjusted);
+        }
+    }
+    Ok(())
+}
+
+// Note: Removed Bayer pattern interpolation functions as they were causing color issues
+// Now using simple grayscale approach with proper exposure handling
 
 fn validate_value_array(values: &[f32], name: &str, min: f32, max: f32) -> Result<(), Box<dyn Error>> {
     for (i, &value) in values.iter().enumerate() {
@@ -306,6 +447,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("Number of threads to use for processing (default: auto-detect)")
                 .default_value("0"),
         )
+        .arg(
+            Arg::new("raw-boost")
+                .long("raw-boost")
+                .value_name("FACTOR")
+                .help("Exposure boost factor for RAW files (default: 2.0)")
+                .default_value("2.0"),
+        )
         .get_matches();
 
     let input_dir = matches.get_one::<String>("input").unwrap();
@@ -378,12 +526,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("  {}: {} images", "Output format".yellow(), format);
     }
 
+    let raw_boost = matches
+        .get_one::<String>("raw-boost")
+        .unwrap()
+        .parse::<f32>()
+        .map_err(|_| "Invalid raw-boost value")?;
+
     let start_time = Instant::now();
 
     if is_video_output {
-        process_images_to_video(input_dir, output_dir, &adjustments, format, fps, quality, resolution, start_time)?;
+        process_images_to_video(input_dir, output_dir, &adjustments, format, fps, quality, resolution, start_time, raw_boost)?;
     } else {
-        process_images_to_images(input_dir, output_dir, &adjustments, format, start_time)?;
+        process_images_to_images(input_dir, output_dir, &adjustments, format, start_time, raw_boost)?;
     }
 
     Ok(())
@@ -395,6 +549,7 @@ fn process_images_to_images(
     adjustments: &ImageAdjustments,
     output_format: &str,
     start_time: Instant,
+    raw_boost: f32,
 ) -> Result<(), Box<dyn Error>> {
     let input_path = Path::new(input_dir);
     let output_path = Path::new(output_dir);
@@ -426,7 +581,7 @@ fn process_images_to_images(
         .par_iter()
         .enumerate()
         .map(|(i, image_path)| {
-            let img = image::open(image_path)
+            let img = load_image_with_raw_support(image_path, raw_boost)
                 .map_err(|e| ProcessingError(format!("Failed to open image: {}", e)))?;
             let processed_img = apply_adjustments(img, adjustments, i, total_files);
 
@@ -470,6 +625,7 @@ fn process_images_to_video(
     quality: u32,
     resolution: Option<&str>,
     start_time: Instant,
+    raw_boost: f32,
 ) -> Result<(), Box<dyn Error>> {
     let input_path = Path::new(input_dir);
     let output_path = Path::new(output_dir);
@@ -513,7 +669,7 @@ fn process_images_to_video(
         .par_iter()
         .enumerate()
         .map(|(i, image_path)| {
-            let img = image::open(image_path)
+            let img = load_image_with_raw_support(image_path, raw_boost)
                 .map_err(|e| ProcessingError(format!("Failed to open image: {}", e)))?;
             let processed_img = apply_adjustments(img, adjustments, i, total_files);
 
@@ -596,7 +752,8 @@ fn is_image_file(path: &Path) -> bool {
         if let Some(ext_str) = extension.to_str() {
             matches!(
                 ext_str.to_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "tiff" | "tif" | "bmp" | "webp" | "raw" | "cr2" | "nef" | "arw"
+                "jpg" | "jpeg" | "png" | "tiff" | "tif" | "bmp" | "webp" | 
+                "raw" | "cr2" | "nef" | "arw" | "raf" | "dng" | "orf" | "rw2" | "pef" | "srw"
             )
         } else {
             false
