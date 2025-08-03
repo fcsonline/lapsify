@@ -66,6 +66,20 @@ cargo run --release -- -i images/ -o output/ -b "0,20,-10,0" -f mp4
 cargo run --release -- -i images/ -o output/ -c "1.0,1.5,0.8,1.2" -f mp4
 ```
 
+### Important Note: Negative Values
+
+When using negative values in command-line arguments, you must use the `=` syntax to separate the argument name from the value:
+
+```bash
+# ✅ Correct - use equals sign for negative values
+cargo run --release -- --exposure="-1,0.2" --fps 20
+
+# ❌ Incorrect - will be interpreted as separate flags
+cargo run --release -- --exposure "-1,0.2" --fps 20
+```
+
+This is because the command-line parser interprets values starting with `-` as separate flags unless explicitly bound with `=`.
+
 ### Examples
 
 ```bash
