@@ -306,6 +306,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("Number of threads to use for processing (default: auto-detect)")
                 .default_value("0"),
         )
+        .arg(
+            Arg::new("start-frame")
+                .long("start-frame")
+                .value_name("INDEX")
+                .help("Start frame index (0-based, inclusive). Default: 0 (first frame)"),
+        )
+        .arg(
+            Arg::new("end-frame")
+                .long("end-frame")
+                .value_name("INDEX")
+                .help("End frame index (0-based, inclusive). Default: last frame"),
+        )
         .get_matches();
 
     let input_dir = matches.get_one::<String>("input").unwrap();
@@ -327,6 +339,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap()
         .parse::<usize>()
         .map_err(|_| "Invalid threads value")?;
+
+    // Parse frame range arguments
+    let start_frame = matches.get_one::<String>("start-frame")
+        .map(|s| s.parse::<usize>())
+        .transpose()
+        .map_err(|_| "Invalid start-frame value")?;
+    
+    let end_frame = matches.get_one::<String>("end-frame")
+        .map(|s| s.parse::<usize>())
+        .transpose()
+        .map_err(|_| "Invalid end-frame value")?;
 
     // Configure thread pool
     if threads > 0 {
@@ -356,6 +379,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("Quality (CRF) must be between 0 and 51".into());
     }
 
+    // Validate frame range if provided
+    if let (Some(start), Some(end)) = (start_frame, end_frame) {
+        if start > end {
+            return Err("Start frame must be less than or equal to end frame".into());
+        }
+    }
+
     let is_video_output = matches!(format.as_str(), "mp4" | "mov" | "avi");
 
     println!("{}", "Processing images with settings:".bold().cyan());
@@ -378,12 +408,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("  {}: {} images", "Output format".yellow(), format);
     }
 
+    // Display frame range if specified
+    if let Some(start) = start_frame {
+        if let Some(end) = end_frame {
+            println!("  {}: frames {} to {} ({} frames)", "Frame range".yellow(), start, end, end - start + 1);
+        } else {
+            println!("  {}: from frame {} to end", "Frame range".yellow(), start);
+        }
+    } else if let Some(end) = end_frame {
+        println!("  {}: from start to frame {}", "Frame range".yellow(), end);
+    }
+
     let start_time = Instant::now();
 
     if is_video_output {
-        process_images_to_video(input_dir, output_dir, &adjustments, format, fps, quality, resolution, start_time)?;
+        process_images_to_video(input_dir, output_dir, &adjustments, format, fps, quality, resolution, start_frame, end_frame, start_time)?;
     } else {
-        process_images_to_images(input_dir, output_dir, &adjustments, format, start_time)?;
+        process_images_to_images(input_dir, output_dir, &adjustments, format, start_frame, end_frame, start_time)?;
     }
 
     Ok(())
@@ -394,6 +435,8 @@ fn process_images_to_images(
     output_dir: &str,
     adjustments: &ImageAdjustments,
     output_format: &str,
+    start_frame: Option<usize>,
+    end_frame: Option<usize>,
     start_time: Instant,
 ) -> Result<(), Box<dyn Error>> {
     let input_path = Path::new(input_dir);
@@ -415,20 +458,47 @@ fn process_images_to_images(
         return Err("No image files found in input directory".into());
     }
 
-    println!("{} {} image files", "Found".bold().blue(), image_files.len());
+    // Apply frame range filtering
+    let total_available_frames = image_files.len();
+    let start_idx = start_frame.unwrap_or(0);
+    let end_idx = end_frame.unwrap_or(total_available_frames - 1);
+    
+    // Validate frame range against available frames
+    if start_idx >= total_available_frames {
+        return Err(format!("Start frame {} is out of range (0-{})", start_idx, total_available_frames - 1).into());
+    }
+    if end_idx >= total_available_frames {
+        return Err(format!("End frame {} is out of range (0-{})", end_idx, total_available_frames - 1).into());
+    }
+    
+    // Filter to selected frame range
+    let filtered_files: Vec<PathBuf> = image_files.into_iter()
+        .skip(start_idx)
+        .take(end_idx - start_idx + 1)
+        .collect();
+    
+    let total_files = filtered_files.len();
+
+    println!("{} {} image files", "Found".bold().blue(), total_available_frames);
+    if start_idx > 0 || end_idx < total_available_frames - 1 {
+        println!("{} {} frames ({} to {})", "Processing".bold().blue(), total_files, start_idx, end_idx);
+    }
 
     // Create a counter for progress tracking
     let processed_count = Arc::new(AtomicUsize::new(0));
-    let total_files = image_files.len();
+    let total_files = total_files;
 
     // Process images in parallel
-    let results: Vec<Result<(), ProcessingError>> = image_files
+    let results: Vec<Result<(), ProcessingError>> = filtered_files
         .par_iter()
         .enumerate()
         .map(|(i, image_path)| {
             let img = image::open(image_path)
                 .map_err(|e| ProcessingError(format!("Failed to open image: {}", e)))?;
-            let processed_img = apply_adjustments(img, adjustments, i, total_files);
+            
+            // Calculate global frame index for proper interpolation
+            let global_frame_index = start_idx + i;
+            let processed_img = apply_adjustments(img, adjustments, global_frame_index, total_available_frames);
 
             let output_filename = generate_output_filename(image_path, output_format);
             let output_file_path = output_path.join(output_filename);
@@ -469,6 +539,8 @@ fn process_images_to_video(
     fps: u32,
     quality: u32,
     resolution: Option<&str>,
+    start_frame: Option<usize>,
+    end_frame: Option<usize>,
     start_time: Instant,
 ) -> Result<(), Box<dyn Error>> {
     let input_path = Path::new(input_dir);
@@ -496,26 +568,53 @@ fn process_images_to_video(
 
     println!("{} {} image files", "Found".bold().blue(), image_files.len());
     
+    // Apply frame range filtering
+    let total_available_frames = image_files.len();
+    let start_idx = start_frame.unwrap_or(0);
+    let end_idx = end_frame.unwrap_or(total_available_frames - 1);
+    
+    // Validate frame range against available frames
+    if start_idx >= total_available_frames {
+        return Err(format!("Start frame {} is out of range (0-{})", start_idx, total_available_frames - 1).into());
+    }
+    if end_idx >= total_available_frames {
+        return Err(format!("End frame {} is out of range (0-{})", end_idx, total_available_frames - 1).into());
+    }
+    
+    // Filter to selected frame range
+    let filtered_files: Vec<PathBuf> = image_files.into_iter()
+        .skip(start_idx)
+        .take(end_idx - start_idx + 1)
+        .collect();
+    
+    let total_files = filtered_files.len();
+    
+    if start_idx > 0 || end_idx < total_available_frames - 1 {
+        println!("{} {} frames ({} to {})", "Processing".bold().blue(), total_files, start_idx, end_idx);
+    }
+    
     // Validate resolution proportions
-    validate_resolution_proportion(&image_files, resolution)?;
+    validate_resolution_proportion(&filtered_files, resolution)?;
     
     println!("{}", "Processing images and creating video...".bold().cyan());
 
     // Calculate frame padding based on number of files
-    let frame_padding = calculate_frame_padding(image_files.len());
+    let frame_padding = calculate_frame_padding(total_files);
 
     // Create a counter for progress tracking
     let processed_count = Arc::new(AtomicUsize::new(0));
-    let total_files = image_files.len();
 
     // Process images in parallel and save to temp directory
-    let results: Vec<Result<(), ProcessingError>> = image_files
+    let results: Vec<Result<(), ProcessingError>> = filtered_files
         .par_iter()
         .enumerate()
         .map(|(i, image_path)| {
             let img = image::open(image_path)
                 .map_err(|e| ProcessingError(format!("Failed to open image: {}", e)))?;
-            let processed_img = apply_adjustments(img, adjustments, i, total_files);
+            
+            // Calculate global frame index for proper interpolation
+            let global_frame_index = start_idx + i;
+            let processed_img = apply_adjustments(img, adjustments, global_frame_index, total_available_frames);
 
             // Save with dynamic sequential numbering for ffmpeg
             let temp_filename = format!("frame_{:0width$}.jpg", i + 1, width = frame_padding);
@@ -585,7 +684,7 @@ fn process_images_to_video(
 
     let processing_time = start_time.elapsed();
     println!("{}: {}", "Video created successfully".bold().green(), video_output_path.display());
-    println!("{}: {:.2} seconds at {} fps", "Video duration".blue(), image_files.len() as f32 / fps as f32, fps);
+    println!("{}: {:.2} seconds at {} fps", "Video duration".blue(), total_files as f32 / fps as f32, fps);
     println!("{}: {:.2?}", "Processing time".blue(), processing_time);
 
     Ok(())
