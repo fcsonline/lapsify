@@ -1,0 +1,16 @@
+[package]
+name = "lapsify"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ferran Basora<fcsonline@gmail.com>"]
+description = "A time-lapse image processor with adjustable parameters"
+license = "MIT"
+repository = "https://github.com/yourusername/lapsify"
+keywords = ["timelapse", "image", "video", "processing"]
+categories = ["multimedia", "command-line-utilities"]
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+image = "0.24"
+rayon = "1.8"
+colored = "2.0" 
