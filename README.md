@@ -1,6 +1,7 @@
-# Lapsify
 
 ![Lapsify Logo](logo.png)
+
+# Lapsify
 
 A powerful time-lapse image processor written in Rust that can process images with adjustable parameters and create videos.
 
@@ -178,6 +179,7 @@ cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offse
 
 # Large offset (will crash with boundary error)
 cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="1000" --offset-y="500" -f mp4
+```
 
 ## Performance
 
@@ -208,7 +210,7 @@ cargo run --release -- -i photos/ -o video/ -f mp4 -t 1
 - TIFF (.tiff, .tif)
 - BMP (.bmp)
 - WebP (.webp)
-- RAW formats (.raw, .cr2, .nef, .arw)
+- ⚠️ Pending: RAW formats (.raw, .cr2, .nef, .arw)
 
 ## License
 
@@ -221,11 +223,3 @@ MIT License - see LICENSE file for details.
 3. Make your changes
 4. Add tests if applicable
 5. Submit a pull request
-
-## Roadmap
-
-- [ ] GUI interface
-- [ ] Batch processing with different settings
-- [ ] Advanced color grading
-- [x] Manual offset controls for crop window
-- [ ] Cloud processing support
