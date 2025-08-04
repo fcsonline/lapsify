@@ -1,5 +1,7 @@
 # Lapsify
 
+![Lapsify Logo](logo.png)
+
 A powerful time-lapse image processor written in Rust that can process images with adjustable parameters and create videos.
 
 ## Features
