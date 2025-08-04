@@ -6,10 +6,12 @@ A powerful time-lapse image processor written in Rust that can process images wi
 
 - **Image Processing**: Apply exposure, brightness, contrast, and saturation adjustments
 - **Cropping**: Crop images with pixel or percentage-based coordinates
+- **Manual Offsets**: Apply X/Y offsets to crop window for manual stabilization
 - **Interpolation**: Smooth transitions between parameter values across frames
 - **Multiple Output Formats**: Generate processed images (JPG, PNG, TIFF) or videos (MP4, MOV, AVI)
 - **Video Creation**: Direct video output using FFmpeg with customizable quality and frame rate
 - **Flexible Parameters**: Support for single values or arrays for smooth transitions
+- **Parallel Processing**: Efficient multi-threaded processing for fast results
 
 ## Installation
 
@@ -47,6 +49,8 @@ cargo run --release -- -i /path/to/images -o /path/to/output -f jpg
 - `-c, --contrast <VALUE>`: Contrast multiplier (0.1 to 3.0)
 - `-s, --saturation <VALUE>`: Saturation multiplier (0.0 to 2.0)
 - `--crop <WIDTH:HEIGHT:X:Y>`: Crop parameters in FFmpeg format (e.g., '1000:800:100:50' or '50%:50%:10%:10%')
+- `--offset-x <PIXELS>`: X offset for crop window in pixels. Single value or comma-separated array
+- `--offset-y <PIXELS>`: Y offset for crop window in pixels. Single value or comma-separated array
 - `-f, --format <FORMAT>`: Output format (jpg, png, tiff, mp4, mov, avi)
 - `-r, --fps <RATE>`: Frame rate for video output (1-120 fps)
 - `-q, --quality <CRF>`: Video quality (0-51, lower = better)
@@ -73,6 +77,40 @@ cargo run --release -- -i images/ -o output/ --crop="600:400:-100:-100" -f mp4
 - **X/Y**: Offset coordinates in pixels or percentages
 - **Percentages**: Values like '50%' are calculated relative to image dimensions
 - **Negative Offsets**: Useful for cropping from the right or bottom edges
+
+### Manual Offsets
+
+Apply X/Y offsets to the crop window for manual stabilization, panning, and positioning:
+
+```bash
+# Static positioning (no movement)
+cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
+
+# Horizontal panning (left to right)
+cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
+
+# Vertical panning (bottom to top)
+cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 0 --offset-y="0,-30,-60,-90" -f mp4
+
+# Diagonal panning
+cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,40,60" --offset-y="0,-10,-20,-30" -f mp4
+
+# Stabilization (compensate for camera shake)
+cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,5,-5,0" --offset-y="0,-3,3,0" -f mp4
+
+# Smooth circular movement
+cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,0,-20,0" --offset-y="0,0,20,0,-20" -f mp4
+```
+
+**Offset Features:**
+- **Crop Requirement**: Only works when `--crop` parameter is specified
+- **Interpolation**: Supports arrays for smooth transitions across frames
+- **Pixel Precision**: Direct pixel-level control over crop window position
+- **Parallel Processing**: All frames processed concurrently for maximum speed
+- **Early Boundary Validation**: Program validates all offset values against image boundaries before processing begins and crashes immediately if any offset would place crop window outside image boundaries
+- **Use Cases**: Stabilization, panning, tracking, and creative camera movements
+
+**Note**: The program validates all offset values against image boundaries before processing begins. If any offset would cause the crop window to extend beyond the image boundaries, the program crashes immediately with a clear error message. This prevents creating videos with black borders or missing content.
 
 ### Parameter Arrays
 
@@ -124,6 +162,21 @@ cargo run --release -- -i photos/ -o video/ --crop="50%:50%:25%:25%" -f mp4
 # Crop from right side (remove 200 pixels from right)
 cargo run --release -- -i photos/ -o video/ --crop="600:600:0:0" -f mp4
 
+# Manual offset with interpolated movement
+cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,10,-5,0" --offset-y="0,5,-10,0" -f mp4
+
+# Single offset for static positioning
+cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
+
+# Horizontal panning effect
+cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
+
+# Stabilization with small corrections
+cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,3,-3,0" --offset-y="0,-2,2,0" -f mp4
+
+# Large offset (will crash with boundary error)
+cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="1000" --offset-y="500" -f mp4
+
 ## Performance
 
 Lapsify uses parallel processing to speed up image processing:
@@ -172,5 +225,5 @@ MIT License - see LICENSE file for details.
 - [ ] GUI interface
 - [ ] Batch processing with different settings
 - [ ] Advanced color grading
-- [ ] Motion detection and stabilization
+- [x] Manual offset controls for crop window
 - [ ] Cloud processing support

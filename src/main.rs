@@ -35,6 +35,8 @@ struct ImageAdjustments {
     contrast: Vec<f32>,
     saturation: Vec<f32>,
     crop: Option<String>,
+    offset_x: Vec<f32>,
+    offset_y: Vec<f32>,
 }
 
 // Implement Send and Sync for ImageAdjustments to make it thread-safe
@@ -49,6 +51,8 @@ impl Default for ImageAdjustments {
             contrast: vec![1.0],     // 0.0 to 2.0 (1.0 = no change)
             saturation: vec![1.0],   // 0.0 to 2.0 (1.0 = no change)
             crop: None,               // Crop string in format "width:height:x:y"
+            offset_x: vec![0.0],     // X offset for crop window (pixels)
+            offset_y: vec![0.0],     // Y offset for crop window (pixels)
         }
     }
 }
@@ -81,6 +85,8 @@ struct CropParams {
     y: f32,
 }
 
+
+
 fn parse_crop_string(input: &str) -> Result<CropParams, Box<dyn Error>> {
     let parts: Vec<&str> = input.split(':').collect();
     if parts.len() != 4 {
@@ -111,6 +117,10 @@ fn parse_crop_value(input: &str) -> Result<f32, Box<dyn Error>> {
         Ok(pixels)
     }
 }
+
+
+
+
 
 
 
@@ -385,6 +395,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("Crop parameters in FFmpeg format (e.g., '1000:800:100:50' or '50%:50%:10%:10%')"),
         )
         .arg(
+            Arg::new("offset-x")
+                .long("offset-x")
+                .value_name("PIXELS")
+                .help("X offset for crop window in pixels. Single value or comma-separated array. Examples: '10' (static), '0,20,0,-20' (panning), '0,5,-5,0' (stabilization)"),
+        )
+        .arg(
+            Arg::new("offset-y")
+                .long("offset-y")
+                .value_name("PIXELS")
+                .help("Y offset for crop window in pixels. Single value or comma-separated array. Examples: '-5' (static), '0,10,0,-10' (panning), '0,-3,3,0' (stabilization)"),
+        )
+        .arg(
             Arg::new("end-frame")
                 .long("end-frame")
                 .value_name("INDEX")
@@ -437,6 +459,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         contrast: parse_value_array(matches.get_one::<String>("contrast").unwrap())?,
         saturation: parse_value_array(matches.get_one::<String>("saturation").unwrap())?,
         crop: matches.get_one::<String>("crop").cloned(),
+        offset_x: parse_value_array(matches.get_one::<String>("offset-x").unwrap_or(&"0.0".to_string()))?,
+        offset_y: parse_value_array(matches.get_one::<String>("offset-y").unwrap_or(&"0.0".to_string()))?,
     };
 
     // Validate parameters
@@ -459,6 +483,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // Early validation of crop and offset boundaries
+    if let Some(ref crop_str) = adjustments.crop {
+        validate_crop_and_offsets(crop_str, &adjustments.offset_x, &adjustments.offset_y, input_dir)?;
+    }
+
     let is_video_output = matches!(format.as_str(), "mp4" | "mov" | "avi");
 
     println!("{}", "Processing images with settings:".bold().cyan());
@@ -470,6 +499,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Print crop settings
     if let Some(ref crop_str) = adjustments.crop {
         println!("  {}: {}", "Crop".green(), crop_str);
+    }
+    
+    // Print offset settings if crop is enabled
+    if adjustments.crop.is_some() {
+        print_value_array("Offset X", &adjustments.offset_x, "px");
+        print_value_array("Offset Y", &adjustments.offset_y, "px");
     }
     
     if threads > 0 {
@@ -562,11 +597,9 @@ fn process_images_to_images(
         println!("{} {} frames ({} to {})", "Processing".bold().blue(), total_files, start_idx, end_idx);
     }
 
-    // Create a counter for progress tracking
-    let processed_count = Arc::new(AtomicUsize::new(0));
-    let total_files = total_files;
-
     // Process images in parallel
+    let processed_count = Arc::new(AtomicUsize::new(0));
+    
     let results: Vec<Result<(), ProcessingError>> = filtered_files
         .par_iter()
         .enumerate()
@@ -762,10 +795,9 @@ fn process_images_to_video(
     // Calculate frame padding based on number of files
     let frame_padding = calculate_frame_padding(total_files);
 
-    // Create a counter for progress tracking
+    // Process images in parallel
     let processed_count = Arc::new(AtomicUsize::new(0));
-
-    // Process images in parallel and save to temp directory
+    
     let results: Vec<Result<(), ProcessingError>> = filtered_files
         .par_iter()
         .enumerate()
@@ -798,6 +830,7 @@ fn process_images_to_video(
     for result in results {
         result.map_err(|e| Box::new(e) as Box<dyn Error>)?;
     }
+    println!(); // New line after progress
 
     println!("\n{}", "Creating video with ffmpeg...".bold().cyan());
 
@@ -868,6 +901,10 @@ fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_in
     // Get interpolated values for this frame
     let (exposure, brightness, contrast, saturation) = adjustments.get_values_at_frame(frame_index, total_frames);
     
+    // Get offset values for this frame
+    let offset_x = interpolate_value(&adjustments.offset_x, frame_index, total_frames);
+    let offset_y = interpolate_value(&adjustments.offset_y, frame_index, total_frames);
+    
     // Apply cropping first if specified
     let (start_x, start_y, end_x, end_y) = if let Some(ref crop_str) = adjustments.crop {
         let crop_params = parse_crop_string(crop_str)
@@ -906,10 +943,16 @@ fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_in
             crop_params.height
         };
         
-        let start_x = x_offset as u32;
-        let start_y = y_offset as u32;
-        let end_x = (start_x + crop_w as u32).min(width);
-        let end_y = (start_y + crop_h as u32).min(height);
+            // Apply offsets to crop coordinates
+    let adjusted_x_offset = x_offset + offset_x;
+    let adjusted_y_offset = y_offset + offset_y;
+    
+    let start_x = adjusted_x_offset as u32;
+    let start_y = adjusted_y_offset as u32;
+    let end_x = (start_x + crop_w as u32).min(width);
+    let end_y = (start_y + crop_h as u32).min(height);
+    
+
         
         (start_x, start_y, end_x, end_y)
     } else {
@@ -919,6 +962,8 @@ fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_in
     
     let new_width = end_x - start_x;
     let new_height = end_y - start_y;
+    
+
     
     let mut new_img = ImageBuffer::new(new_width, new_height);
 
@@ -983,6 +1028,104 @@ fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_in
 fn generate_output_filename(input_path: &Path, output_format: &str) -> String {
     let stem = input_path.file_stem().unwrap().to_str().unwrap();
     format!("{}_processed.{}", stem, output_format)
+}
+
+fn validate_crop_and_offsets(
+    crop_str: &str,
+    offset_x: &[f32],
+    offset_y: &[f32],
+    input_dir: &str,
+) -> Result<(), Box<dyn Error>> {
+    // Get the first image to determine original dimensions
+    let input_path = Path::new(input_dir);
+    let mut image_files: Vec<PathBuf> = fs::read_dir(input_path)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| is_image_file(path))
+        .collect();
+
+    if image_files.is_empty() {
+        return Err("No image files found in input directory".into());
+    }
+
+    image_files.sort();
+    let first_image_path = &image_files[0];
+    let img = image::open(first_image_path)?;
+    let (original_width, original_height) = img.dimensions();
+
+    // Parse crop parameters
+    let crop_params = parse_crop_string(crop_str)?;
+    
+    // Calculate crop coordinates
+    let x_offset = if crop_params.x < 0.0 {
+        original_width as f32 + (crop_params.x / 100.0) * original_width as f32
+    } else {
+        crop_params.x
+    };
+    
+    let y_offset = if crop_params.y < 0.0 {
+        original_height as f32 + (crop_params.y / 100.0) * original_height as f32
+    } else {
+        crop_params.y
+    };
+    
+    let crop_w = if crop_params.width <= 0.0 {
+        original_width as f32 - x_offset
+    } else if crop_params.width <= 100.0 && crop_params.width > 0.0 {
+        (crop_params.width / 100.0) * original_width as f32
+    } else {
+        crop_params.width
+    };
+    
+    let crop_h = if crop_params.height <= 0.0 {
+        original_height as f32 - y_offset
+    } else if crop_params.height <= 100.0 && crop_params.height > 0.0 {
+        (crop_params.height / 100.0) * original_height as f32
+    } else {
+        crop_params.height
+    };
+
+    // Check all possible offset values against boundaries
+    let all_offset_x_values = if offset_x.len() == 1 {
+        vec![offset_x[0]]
+    } else {
+        // For arrays, check min and max values
+        let min_x = offset_x.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let max_x = offset_x.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        vec![min_x, max_x]
+    };
+
+    let all_offset_y_values = if offset_y.len() == 1 {
+        vec![offset_y[0]]
+    } else {
+        // For arrays, check min and max values
+        let min_y = offset_y.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let max_y = offset_y.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        vec![min_y, max_y]
+    };
+
+    // Validate each offset value
+    for &offset_x_val in &all_offset_x_values {
+        let adjusted_x = x_offset + offset_x_val;
+        if adjusted_x < 0.0 {
+            return Err(format!("X offset {} would place crop window outside left edge (image width: {})", offset_x_val, original_width).into());
+        }
+        if adjusted_x + crop_w > original_width as f32 {
+            return Err(format!("X offset {} would place crop window outside right edge (image width: {}, crop width: {})", offset_x_val, original_width, crop_w).into());
+        }
+    }
+
+    for &offset_y_val in &all_offset_y_values {
+        let adjusted_y = y_offset + offset_y_val;
+        if adjusted_y < 0.0 {
+            return Err(format!("Y offset {} would place crop window outside top edge (image height: {})", offset_y_val, original_height).into());
+        }
+        if adjusted_y + crop_h > original_height as f32 {
+            return Err(format!("Y offset {} would place crop window outside bottom edge (image height: {}, crop height: {})", offset_y_val, original_height, crop_h).into());
+        }
+    }
+
+    Ok(())
 }
 
 fn save_image(
