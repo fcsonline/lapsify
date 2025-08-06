@@ -23,7 +23,19 @@ A powerful time-lapse image processor written in Rust that can process images wi
 - Rust (1.70 or later)
 - FFmpeg (for video output)
 
+### Installing with Cargo
+
+The easiest way to install Lapsify is using Cargo:
+
+```bash
+cargo install lapsify
+```
+
+This will download, compile, and install the latest version from crates.io.
+
 ### Building from Source
+
+Alternatively, you can build from source:
 
 ```bash
 git clone https://github.com/yourusername/lapsify.git
@@ -37,10 +49,10 @@ cargo build --release
 
 ```bash
 # Process images to video
-cargo run --release -- -i /path/to/images -o /path/to/output -f mp4
+lapsify -i /path/to/images -o /path/to/output -f mp4
 
 # Process images to processed images
-cargo run --release -- -i /path/to/images -o /path/to/output -f jpg
+lapsify -i /path/to/images -o /path/to/output -f jpg
 ```
 
 ### Command Line Options
@@ -66,13 +78,13 @@ Crop images using FFmpeg-style crop parameters:
 
 ```bash
 # Crop with pixel coordinates (width:height:x:y)
-cargo run --release -- -i images/ -o output/ --crop="600:400:100:50" -f mp4
+lapsify -i images/ -o output/ --crop="600:400:100:50" -f mp4
 
 # Crop with percentage coordinates
-cargo run --release -- -i images/ -o output/ --crop="50%:50%:10%:10%" -f mp4
+lapsify -i images/ -o output/ --crop="50%:50%:10%:10%" -f mp4
 
 # Crop from right/bottom using negative offsets
-cargo run --release -- -i images/ -o output/ --crop="600:400:-100:-100" -f mp4
+lapsify -i images/ -o output/ --crop="600:400:-100:-100" -f mp4
 ```
 
 **Crop Format:** `width:height:x:y`
@@ -87,22 +99,22 @@ Apply X/Y offsets to the crop window for manual stabilization, panning, and posi
 
 ```bash
 # Static positioning (no movement)
-cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
+lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
 
 # Horizontal panning (left to right)
-cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
+lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
 
 # Vertical panning (bottom to top)
-cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 0 --offset-y="0,-30,-60,-90" -f mp4
+lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 0 --offset-y="0,-30,-60,-90" -f mp4
 
 # Diagonal panning
-cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,40,60" --offset-y="0,-10,-20,-30" -f mp4
+lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,40,60" --offset-y="0,-10,-20,-30" -f mp4
 
 # Stabilization (compensate for camera shake)
-cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,5,-5,0" --offset-y="0,-3,3,0" -f mp4
+lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,5,-5,0" --offset-y="0,-3,3,0" -f mp4
 
 # Smooth circular movement
-cargo run --release -- -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,0,-20,0" --offset-y="0,0,20,0,-20" -f mp4
+lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,0,-20,0" --offset-y="0,0,20,0,-20" -f mp4
 ```
 
 **Offset Features:**
@@ -121,13 +133,13 @@ You can provide arrays of values for smooth transitions:
 
 ```bash
 # Gradual exposure change from -1 to +1 EV
-cargo run --release -- -i images/ -o output/ -e "-1.0,1.0" -f mp4
+lapsify -i images/ -o output/ -e "-1.0,1.0" -f mp4
 
 # Multiple brightness points
-cargo run --release -- -i images/ -o output/ -b "0,20,-10,0" -f mp4
+lapsify -i images/ -o output/ -b "0,20,-10,0" -f mp4
 
 # Complex contrast curve
-cargo run --release -- -i images/ -o output/ -c "1.0,1.5,0.8,1.2" -f mp4
+lapsify -i images/ -o output/ -c "1.0,1.5,0.8,1.2" -f mp4
 ```
 
 ### Important Note: Negative Values
@@ -136,10 +148,10 @@ When using negative values in command-line arguments, you must use the `=` synta
 
 ```bash
 # ✅ Correct - use equals sign for negative values
-cargo run --release -- --exposure="-1,0.2" --fps 20
+lapsify --exposure="-1,0.2" --fps 20
 
 # ❌ Incorrect - will be interpreted as separate flags
-cargo run --release -- --exposure "-1,0.2" --fps 20
+lapsify --exposure "-1,0.2" --fps 20
 ```
 
 This is because the command-line parser interprets values starting with `-` as separate flags unless explicitly bound with `=`.
@@ -148,37 +160,37 @@ This is because the command-line parser interprets values starting with `-` as s
 
 ```bash
 # Create a video with increased brightness and contrast
-cargo run --release -- -i photos/ -o video/ -b 20 -c 1.2 -f mp4 -r 30
+lapsify -i photos/ -o video/ -b 20 -c 1.2 -f mp4 -r 30
 
 # Process with exposure ramping
-cargo run --release -- -i photos/ -o processed/ -e "-0.5,1.0" -f jpg
+lapsify -i photos/ -o processed/ -e "-0.5,1.0" -f jpg
 
 # High-quality 4K video
-cargo run --release -- -i photos/ -o video/ -f mp4 -r 24 -q 18 --resolution 4K
+lapsify -i photos/ -o video/ -f mp4 -r 24 -q 18 --resolution 4K
 
 # Use specific number of threads for processing
-cargo run --release -- -i photos/ -o video/ -f mp4 -t 8
+lapsify -i photos/ -o video/ -f mp4 -t 8
 
 # Crop to center 50% of the image
-cargo run --release -- -i photos/ -o video/ --crop="50%:50%:25%:25%" -f mp4
+lapsify -i photos/ -o video/ --crop="50%:50%:25%:25%" -f mp4
 
 # Crop from right side (remove 200 pixels from right)
-cargo run --release -- -i photos/ -o video/ --crop="600:600:0:0" -f mp4
+lapsify -i photos/ -o video/ --crop="600:600:0:0" -f mp4
 
 # Manual offset with interpolated movement
-cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,10,-5,0" --offset-y="0,5,-10,0" -f mp4
+lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,10,-5,0" --offset-y="0,5,-10,0" -f mp4
 
 # Single offset for static positioning
-cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
+lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
 
 # Horizontal panning effect
-cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
+lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
 
 # Stabilization with small corrections
-cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,3,-3,0" --offset-y="0,-2,2,0" -f mp4
+lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,3,-3,0" --offset-y="0,-2,2,0" -f mp4
 
 # Large offset (will crash with boundary error)
-cargo run --release -- -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="1000" --offset-y="500" -f mp4
+lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="1000" --offset-y="500" -f mp4
 ```
 
 ## Performance
@@ -194,13 +206,13 @@ Lapsify uses parallel processing to speed up image processing:
 
 ```bash
 # Use auto-detected number of threads (recommended)
-cargo run --release -- -i photos/ -o video/ -f mp4
+lapsify -i photos/ -o video/ -f mp4
 
 # Use 4 threads specifically
-cargo run --release -- -i photos/ -o video/ -f mp4 -t 4
+lapsify -i photos/ -o video/ -f mp4 -t 4
 
 # Use single thread (for debugging or low-resource systems)
-cargo run --release -- -i photos/ -o video/ -f mp4 -t 1
+lapsify -i photos/ -o video/ -f mp4 -t 1
 ```
 
 ## Supported Image Formats
