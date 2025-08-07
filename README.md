@@ -3,226 +3,199 @@
 
 # Lapsify
 
-A powerful time-lapse image processor written in Rust that can process images with adjustable parameters and create videos.
+A time-lapse image processor with adjustable parameters, available as both a command-line tool and a Qt-based GUI application.
 
 ## Features
 
-- **Image Processing**: Apply exposure, brightness, contrast, and saturation adjustments
-- **Cropping**: Crop images with pixel or percentage-based coordinates
-- **Manual Offsets**: Apply X/Y offsets to crop window for manual stabilization
-- **Interpolation**: Smooth transitions between parameter values across frames
-- **Multiple Output Formats**: Generate processed images (JPG, PNG, TIFF) or videos (MP4, MOV, AVI)
-- **Video Creation**: Direct video output using FFmpeg with customizable quality and frame rate
-- **Flexible Parameters**: Support for single values or arrays for smooth transitions
-- **Parallel Processing**: Efficient multi-threaded processing for fast results
+### Command Line Interface
+- Process time-lapse images with adjustable parameters
+- Support for exposure, brightness, contrast, and saturation adjustments
+- Cropping and offset controls
+- Video output with customizable frame rate and quality
+- Multi-threaded processing for improved performance
+
+### GUI Application
+- Modern Qt-based interface for macOS
+- Real-time image preview with parameter adjustments
+- Image carousel with keyboard navigation
+- Sidebar with sliders for all Lapsify parameters
+- Live preview of parameter changes
+- Support for loading images from folders
 
 ## Installation
 
 ### Prerequisites
 
-- Rust (1.70 or later)
-- FFmpeg (for video output)
+1. **Qt Development Libraries** (for GUI):
+   ```bash
+   # On macOS with Homebrew
+   brew install qt@6
+   
+   # Or install Qt from https://www.qt.io/download
+   ```
 
-### Installing with Cargo
+2. **FFmpeg** (for video processing):
+   ```bash
+   # On macOS with Homebrew
+   brew install ffmpeg
+   ```
 
-The easiest way to install Lapsify is using Cargo:
+### Building
 
-```bash
-cargo install lapsify
-```
+1. **Command Line Version**:
+   ```bash
+   cargo build --release --bin lapsify
+   ```
 
-This will download, compile, and install the latest version from crates.io.
-
-### Building from Source
-
-Alternatively, you can build from source:
-
-```bash
-git clone https://github.com/yourusername/lapsify.git
-cd lapsify
-cargo build --release
-```
+2. **GUI Version**:
+   ```bash
+   cargo build --release --bin lapsify-gui
+   ```
 
 ## Usage
 
-### Basic Usage
+### Command Line Interface
 
 ```bash
-# Process images to video
-lapsify -i /path/to/images -o /path/to/output -f mp4
+# Basic usage
+./target/release/lapsify -i /path/to/images -o /path/to/output
 
-# Process images to processed images
-lapsify -i /path/to/images -o /path/to/output -f jpg
+# With custom parameters
+./target/release/lapsify \
+  -i /path/to/images \
+  -o /path/to/output \
+  --exposure "0.0,1.5,-0.5" \
+  --brightness "0,20,-10" \
+  --contrast "1.0,1.5,0.8" \
+  --saturation "1.0,1.8,0.5" \
+  --crop "80%:60%:10%:20%" \
+  --offset-x "0,20,0,-20" \
+  --offset-y "0,10,0,-10" \
+  --fps 30 \
+  --quality 20 \
+  --resolution 1920x1080
 ```
 
-### Command Line Options
+### GUI Application
 
-- `-i, --input <DIR>`: Input directory containing images (required)
-- `-o, --output <DIR>`: Output directory for processed files (required)
-- `-e, --exposure <STOPS>`: Exposure adjustment in EV stops (-3.0 to +3.0)
-- `-b, --brightness <VALUE>`: Brightness adjustment (-100 to +100)
-- `-c, --contrast <VALUE>`: Contrast multiplier (0.1 to 3.0)
-- `-s, --saturation <VALUE>`: Saturation multiplier (0.0 to 2.0)
-- `--crop <WIDTH:HEIGHT:X:Y>`: Crop parameters in FFmpeg format (e.g., '1000:800:100:50' or '50%:50%:10%:10%')
-- `--offset-x <PIXELS>`: X offset for crop window in pixels. Single value or comma-separated array
-- `--offset-y <PIXELS>`: Y offset for crop window in pixels. Single value or comma-separated array
-- `-f, --format <FORMAT>`: Output format (jpg, png, tiff, mp4, mov, avi)
-- `-r, --fps <RATE>`: Frame rate for video output (1-120 fps)
-- `-q, --quality <CRF>`: Video quality (0-51, lower = better)
-- `--resolution <WIDTHxHEIGHT>`: Output video resolution
-- `-t, --threads <NUM>`: Number of threads to use for processing (default: auto-detect)
+```bash
+# Run the GUI application
+./target/release/lapsify-gui
+```
+
+#### GUI Features:
+- **Load Images**: Click "Load Images" to select a folder containing your time-lapse images
+- **Navigation**: Use "Previous" and "Next" buttons or arrow keys to navigate through images
+- **Parameter Adjustment**: Use the sliders and controls in the right sidebar to adjust:
+  - **Exposure**: -3.0 to +3.0 EV stops
+  - **Brightness**: -100 to +100
+  - **Contrast**: 0.1x to 3.0x multiplier
+  - **Saturation**: 0.0x to 2.0x multiplier
+  - **Crop Settings**: Enable/disable cropping with width, height, and position controls
+  - **Frame Offset**: X and Y offset controls for stabilization or panning effects
+
+#### Keyboard Shortcuts:
+- **Left Arrow**: Previous image
+- **Right Arrow**: Next image
+- **Space**: Play/pause auto-advance (planned feature)
+
+## Parameters
+
+### Image Adjustments
+- **Exposure**: Adjust exposure in EV stops (-3.0 to +3.0)
+- **Brightness**: Add or subtract brightness (-100 to +100)
+- **Contrast**: Multiply contrast (0.1 to 3.0, 1.0 = no change)
+- **Saturation**: Multiply saturation (0.0 to 2.0, 1.0 = no change)
 
 ### Cropping
+- **Crop String Format**: `width:height:x:y`
+  - Values can be pixels or percentages (e.g., "80%:60%:10%:20%")
+  - Negative X/Y values are percentages from right/bottom
+- **Offset Controls**: Fine-tune crop position with pixel offsets
 
-Crop images using FFmpeg-style crop parameters:
+### Video Output
+- **Frame Rate**: 1-120 fps (default: 24)
+- **Quality**: CRF 0-51 (lower = better, 18-28 recommended)
+- **Resolution**: Custom or preset (4K, HD, 720p)
 
+## Examples
+
+### Basic Time-lapse Processing
 ```bash
-# Crop with pixel coordinates (width:height:x:y)
-lapsify -i images/ -o output/ --crop="600:400:100:50" -f mp4
-
-# Crop with percentage coordinates
-lapsify -i images/ -o output/ --crop="50%:50%:10%:10%" -f mp4
-
-# Crop from right/bottom using negative offsets
-lapsify -i images/ -o output/ --crop="600:400:-100:-100" -f mp4
+./target/release/lapsify -i ./timelapse_images -o ./output -f mp4
 ```
 
-**Crop Format:** `width:height:x:y`
-- **Width/Height**: Output dimensions in pixels or percentages
-- **X/Y**: Offset coordinates in pixels or percentages
-- **Percentages**: Values like '50%' are calculated relative to image dimensions
-- **Negative Offsets**: Useful for cropping from the right or bottom edges
-
-### Manual Offsets
-
-Apply X/Y offsets to the crop window for manual stabilization, panning, and positioning:
-
+### Advanced Processing with Panning Effect
 ```bash
-# Static positioning (no movement)
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
-
-# Horizontal panning (left to right)
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
-
-# Vertical panning (bottom to top)
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 0 --offset-y="0,-30,-60,-90" -f mp4
-
-# Diagonal panning
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,40,60" --offset-y="0,-10,-20,-30" -f mp4
-
-# Stabilization (compensate for camera shake)
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,5,-5,0" --offset-y="0,-3,3,0" -f mp4
-
-# Smooth circular movement
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,0,-20,0" --offset-y="0,0,20,0,-20" -f mp4
+./target/release/lapsify \
+  -i ./timelapse_images \
+  -o ./output \
+  --crop "90%:90%:5%:5%" \
+  --offset-x "0,50,100,50,0" \
+  --offset-y "0,25,0,-25,0" \
+  --exposure "0.0,0.5,0.0" \
+  --fps 30 \
+  --quality 18
 ```
 
-**Offset Features:**
-- **Crop Requirement**: Only works when `--crop` parameter is specified
-- **Interpolation**: Supports arrays for smooth transitions across frames
-- **Pixel Precision**: Direct pixel-level control over crop window position
-- **Parallel Processing**: All frames processed concurrently for maximum speed
-- **Early Boundary Validation**: Program validates all offset values against image boundaries before processing begins and crashes immediately if any offset would place crop window outside image boundaries
-- **Use Cases**: Stabilization, panning, tracking, and creative camera movements
-
-**Note**: The program validates all offset values against image boundaries before processing begins. If any offset would cause the crop window to extend beyond the image boundaries, the program crashes immediately with a clear error message. This prevents creating videos with black borders or missing content.
-
-### Parameter Arrays
-
-You can provide arrays of values for smooth transitions:
-
+### Stabilization Effect
 ```bash
-# Gradual exposure change from -1 to +1 EV
-lapsify -i images/ -o output/ -e "-1.0,1.0" -f mp4
-
-# Multiple brightness points
-lapsify -i images/ -o output/ -b "0,20,-10,0" -f mp4
-
-# Complex contrast curve
-lapsify -i images/ -o output/ -c "1.0,1.5,0.8,1.2" -f mp4
+./target/release/lapsify \
+  -i ./timelapse_images \
+  -o ./output \
+  --crop "95%:95%:2.5%:2.5%" \
+  --offset-x "0,5,-5,0" \
+  --offset-y "0,-3,3,0" \
+  --fps 24
 ```
 
-### Important Note: Negative Values
+## Supported Formats
 
-When using negative values in command-line arguments, you must use the `=` syntax to separate the argument name from the value:
+### Input Formats
+- JPEG, PNG, TIFF, BMP, WebP
+- RAW formats: CR2, NEF, ARW
 
-```bash
-# ✅ Correct - use equals sign for negative values
-lapsify --exposure="-1,0.2" --fps 20
-
-# ❌ Incorrect - will be interpreted as separate flags
-lapsify --exposure "-1,0.2" --fps 20
-```
-
-This is because the command-line parser interprets values starting with `-` as separate flags unless explicitly bound with `=`.
-
-### Examples
-
-```bash
-# Create a video with increased brightness and contrast
-lapsify -i photos/ -o video/ -b 20 -c 1.2 -f mp4 -r 30
-
-# Process with exposure ramping
-lapsify -i photos/ -o processed/ -e "-0.5,1.0" -f jpg
-
-# High-quality 4K video
-lapsify -i photos/ -o video/ -f mp4 -r 24 -q 18 --resolution 4K
-
-# Use specific number of threads for processing
-lapsify -i photos/ -o video/ -f mp4 -t 8
-
-# Crop to center 50% of the image
-lapsify -i photos/ -o video/ --crop="50%:50%:25%:25%" -f mp4
-
-# Crop from right side (remove 200 pixels from right)
-lapsify -i photos/ -o video/ --crop="600:600:0:0" -f mp4
-
-# Manual offset with interpolated movement
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,10,-5,0" --offset-y="0,5,-10,0" -f mp4
-
-# Single offset for static positioning
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
-
-# Horizontal panning effect
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
-
-# Stabilization with small corrections
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,3,-3,0" --offset-y="0,-2,2,0" -f mp4
-
-# Large offset (will crash with boundary error)
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="1000" --offset-y="500" -f mp4
-```
+### Output Formats
+- **Images**: JPG, PNG, TIFF
+- **Video**: MP4, MOV, AVI
 
 ## Performance
 
-Lapsify uses parallel processing to speed up image processing:
+- Multi-threaded processing using all available CPU cores
+- Memory-efficient processing for large image sequences
+- GPU acceleration planned for future releases
 
-- **Auto-detection**: By default, uses all available CPU cores
-- **Manual control**: Use `-t/--threads` to specify exact number of threads
-- **Progress tracking**: Real-time progress updates during processing
-- **Memory efficient**: Processes images in parallel without excessive memory usage
+## Development
 
-### Threading Examples
-
-```bash
-# Use auto-detected number of threads (recommended)
-lapsify -i photos/ -o video/ -f mp4
-
-# Use 4 threads specifically
-lapsify -i photos/ -o video/ -f mp4 -t 4
-
-# Use single thread (for debugging or low-resource systems)
-lapsify -i photos/ -o video/ -f mp4 -t 1
+### Project Structure
+```
+lapsify/
+├── src/
+│   ├── main.rs      # Command-line interface
+│   └── gui.rs       # Qt GUI application
+├── Cargo.toml       # Dependencies and build configuration
+├── build.rs         # Build script for Qt bindings
+└── README.md        # This file
 ```
 
-## Supported Image Formats
+### Building from Source
+```bash
+# Clone the repository
+git clone https://github.com/fcsonline/lapsify.git
+cd lapsify
 
-- JPEG (.jpg, .jpeg)
-- PNG (.png)
-- TIFF (.tiff, .tif)
-- BMP (.bmp)
-- WebP (.webp)
-- ⚠️ Pending: RAW formats (.raw, .cr2, .nef, .arw)
+# Build both versions
+cargo build --release
+
+# Run tests
+cargo test
+
+# Run the GUI
+cargo run --bin lapsify-gui
+
+# Run the CLI
+cargo run --bin lapsify -- -i ./test_images -o ./output
+```
 
 ## License
 
@@ -235,3 +208,13 @@ MIT License - see LICENSE file for details.
 3. Make your changes
 4. Add tests if applicable
 5. Submit a pull request
+
+## Roadmap
+
+- [ ] GPU acceleration for faster processing
+- [ ] Auto-advance feature in GUI
+- [ ] Batch processing in GUI
+- [ ] Preset management
+- [ ] Advanced stabilization algorithms
+- [ ] Support for more video codecs
+- [ ] Cross-platform GUI support (Windows, Linux)

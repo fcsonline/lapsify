@@ -12,7 +12,7 @@ use colored::*;
 use std::time::Instant;
 
 #[derive(Debug)]
-struct ProcessingError(String);
+pub struct ProcessingError(String);
 
 impl fmt::Display for ProcessingError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -29,14 +29,14 @@ impl From<Box<dyn std::error::Error>> for ProcessingError {
 }
 
 #[derive(Debug, Clone)]
-struct ImageAdjustments {
-    exposure: Vec<f32>,
-    brightness: Vec<f32>,
-    contrast: Vec<f32>,
-    saturation: Vec<f32>,
-    crop: Option<String>,
-    offset_x: Vec<f32>,
-    offset_y: Vec<f32>,
+pub struct ImageAdjustments {
+    pub exposure: Vec<f32>,
+    pub brightness: Vec<f32>,
+    pub contrast: Vec<f32>,
+    pub saturation: Vec<f32>,
+    pub crop: Option<String>,
+    pub offset_x: Vec<f32>,
+    pub offset_y: Vec<f32>,
 }
 
 // Implement Send and Sync for ImageAdjustments to make it thread-safe
@@ -879,7 +879,7 @@ fn process_images_to_video(
     Ok(())
 }
 
-fn is_image_file(path: &Path) -> bool {
+pub fn is_image_file(path: &Path) -> bool {
     if let Some(extension) = path.extension() {
         if let Some(ext_str) = extension.to_str() {
             matches!(
@@ -894,7 +894,7 @@ fn is_image_file(path: &Path) -> bool {
     }
 }
 
-fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_index: usize, total_frames: usize) -> Result<DynamicImage, ProcessingError> {
+pub fn apply_adjustments(img: DynamicImage, adjustments: &ImageAdjustments, frame_index: usize, total_frames: usize) -> Result<DynamicImage, ProcessingError> {
     let rgb_img = img.to_rgb8();
     let (width, height) = rgb_img.dimensions();
     
