@@ -9,8 +9,23 @@ repository = "https://github.com/fcsonline/lapsify"
 keywords = ["timelapse", "image", "video", "processing"]
 categories = ["multimedia", "command-line-utilities"]
 
+[[bin]]
+name = "lapsify"
+path = "src/main.rs"
+
+[[bin]]
+name = "lapsify-gui"
+path = "src/gui/main.rs"
+
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
 image = "0.24"
 rayon = "1.8"
-colored = "2.0" 
+colored = "2.0"
+# GUI dependencies
+eframe = "0.28"
+egui = "0.28"
+tokio = { version = "1.0", features = ["full"] }
+rfd = "0.14"
+serde = { version = "1.0", features = ["derive"] }
+env_logger = "0.10" 
