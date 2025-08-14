@@ -6,6 +6,9 @@ use std::fs;
 use std::time::{SystemTime, Instant};
 use image::{GenericImageView, DynamicImage, imageops::FilterType};
 use std::thread;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, mpsc};
+use std::io::{BufRead, BufReader};
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -28,6 +31,23 @@ fn main() -> Result<(), eframe::Error> {
 
 // Core data structures for state management
 
+/// Session state for persistence
+#[derive(Serialize, Deserialize, Default)]
+pub struct SessionState {
+    pub selected_folder: Option<PathBuf>,
+    pub selected_image_index: Option<usize>,
+    pub settings: LapsifySettings,
+    pub ui_state: UiState,
+}
+
+/// Settings preset for common configurations
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SettingsPreset {
+    pub name: String,
+    pub description: String,
+    pub settings: LapsifySettings,
+}
+
 /// Main application state containing all GUI state
 #[derive(Default)]
 pub struct AppState {
@@ -37,6 +57,7 @@ pub struct AppState {
     pub settings: LapsifySettings,
     pub processing_status: ProcessingStatus,
     pub ui_state: UiState,
+    pub settings_presets: Vec<SettingsPreset>,
 }
 
 impl AppState {
@@ -283,6 +304,116 @@ impl AppState {
     /// Validate current settings and update UI validation state
     pub fn validate_settings(&mut self) {
         self.ui_state.validation_errors = self.settings.validate();
+    }
+    
+    /// Save session state to file
+    pub fn save_session(&self) -> Result<(), String> {
+        let session_state = SessionState {
+            selected_folder: self.selected_folder.clone(),
+            selected_image_index: self.selected_image_index,
+            settings: self.settings.clone(),
+            ui_state: UiState {
+                sidebar_width: self.ui_state.sidebar_width,
+                carousel_height: self.ui_state.carousel_height,
+                show_settings_validation: self.ui_state.show_settings_validation,
+                validation_errors: HashMap::new(), // Don't persist validation errors
+                zoom_level: self.ui_state.zoom_level,
+                pan_offset: egui::Vec2::ZERO, // Don't persist pan offset
+                folder_error: None, // Don't persist errors
+                thumbnail_cache: ThumbnailCache::new(100, 50), // Don't persist cache
+                thumbnail_load_states: HashMap::new(), // Don't persist load states
+                carousel_scroll_offset: 0.0, // Don't persist scroll
+                visible_thumbnail_range: (0, 0), // Don't persist range
+                output_directory: self.ui_state.output_directory.clone(),
+                window_size: self.ui_state.window_size,
+                window_position: self.ui_state.window_position,
+            },
+        };
+        
+        let session_dir = get_session_dir()?;
+        fs::create_dir_all(&session_dir)
+            .map_err(|e| format!("Failed to create session directory: {}", e))?;
+        
+        let session_file = session_dir.join("session.json");
+        let json = serde_json::to_string_pretty(&session_state)
+            .map_err(|e| format!("Failed to serialize session state: {}", e))?;
+        
+        fs::write(&session_file, json)
+            .map_err(|e| format!("Failed to write session file: {}", e))?;
+        
+        Ok(())
+    }
+    
+    /// Load session state from file
+    pub fn load_session(&mut self) -> Result<(), String> {
+        let session_dir = get_session_dir()?;
+        let session_file = session_dir.join("session.json");
+        
+        if !session_file.exists() {
+            return Ok(()); // No session file, use defaults
+        }
+        
+        let json = fs::read_to_string(&session_file)
+            .map_err(|e| format!("Failed to read session file: {}", e))?;
+        
+        let session_state: SessionState = serde_json::from_str(&json)
+            .map_err(|e| format!("Failed to deserialize session state: {}", e))?;
+        
+        // Restore state
+        self.selected_folder = session_state.selected_folder;
+        self.selected_image_index = session_state.selected_image_index;
+        self.settings = session_state.settings;
+        
+        // Restore UI state (with runtime state reset)
+        self.ui_state.sidebar_width = session_state.ui_state.sidebar_width;
+        self.ui_state.carousel_height = session_state.ui_state.carousel_height;
+        self.ui_state.show_settings_validation = session_state.ui_state.show_settings_validation;
+        self.ui_state.zoom_level = session_state.ui_state.zoom_level;
+        self.ui_state.output_directory = session_state.ui_state.output_directory;
+        self.ui_state.window_size = session_state.ui_state.window_size;
+        self.ui_state.window_position = session_state.ui_state.window_position;
+        
+        // Validate restored settings
+        self.validate_settings();
+        
+        Ok(())
+    }
+    
+    /// Load settings presets
+    pub fn load_presets(&mut self) -> Result<(), String> {
+        let session_dir = get_session_dir()?;
+        let presets_file = session_dir.join("presets.json");
+        
+        if !presets_file.exists() {
+            // Create default presets
+            self.settings_presets = create_default_presets();
+            self.save_presets()?;
+            return Ok(());
+        }
+        
+        let json = fs::read_to_string(&presets_file)
+            .map_err(|e| format!("Failed to read presets file: {}", e))?;
+        
+        self.settings_presets = serde_json::from_str(&json)
+            .map_err(|e| format!("Failed to deserialize presets: {}", e))?;
+        
+        Ok(())
+    }
+    
+    /// Save settings presets
+    pub fn save_presets(&self) -> Result<(), String> {
+        let session_dir = get_session_dir()?;
+        fs::create_dir_all(&session_dir)
+            .map_err(|e| format!("Failed to create session directory: {}", e))?;
+        
+        let presets_file = session_dir.join("presets.json");
+        let json = serde_json::to_string_pretty(&self.settings_presets)
+            .map_err(|e| format!("Failed to serialize presets: {}", e))?;
+        
+        fs::write(&presets_file, json)
+            .map_err(|e| format!("Failed to write presets file: {}", e))?;
+        
+        Ok(())
     }
 }
 
@@ -646,10 +777,121 @@ impl LapsifySettings {
         
         errors
     }
+    
+    /// Generate CLI command arguments from settings
+    pub fn generate_command_args(&self, input_dir: &Path, output_dir: &Path) -> Vec<String> {
+        let mut args = Vec::new();
+        
+        // Input and output directories
+        args.push("--input".to_string());
+        args.push(input_dir.to_string_lossy().to_string());
+        args.push("--output".to_string());
+        args.push(output_dir.to_string_lossy().to_string());
+        
+        // Image adjustment parameters
+        if self.exposure.len() == 1 && self.exposure[0] != 0.0 {
+            args.push("--exposure".to_string());
+            args.push(self.exposure[0].to_string());
+        } else if self.exposure.len() > 1 {
+            args.push("--exposure".to_string());
+            args.push(self.exposure.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        if self.brightness.len() == 1 && self.brightness[0] != 0.0 {
+            args.push("--brightness".to_string());
+            args.push(self.brightness[0].to_string());
+        } else if self.brightness.len() > 1 {
+            args.push("--brightness".to_string());
+            args.push(self.brightness.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        if self.contrast.len() == 1 && self.contrast[0] != 1.0 {
+            args.push("--contrast".to_string());
+            args.push(self.contrast[0].to_string());
+        } else if self.contrast.len() > 1 {
+            args.push("--contrast".to_string());
+            args.push(self.contrast.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        if self.saturation.len() == 1 && self.saturation[0] != 1.0 {
+            args.push("--saturation".to_string());
+            args.push(self.saturation[0].to_string());
+        } else if self.saturation.len() > 1 {
+            args.push("--saturation".to_string());
+            args.push(self.saturation.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        // Crop and positioning
+        if let Some(ref crop) = self.crop {
+            args.push("--crop".to_string());
+            args.push(crop.clone());
+        }
+        
+        if self.offset_x.len() == 1 && self.offset_x[0] != 0.0 {
+            args.push("--offset-x".to_string());
+            args.push(self.offset_x[0].to_string());
+        } else if self.offset_x.len() > 1 {
+            args.push("--offset-x".to_string());
+            args.push(self.offset_x.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        if self.offset_y.len() == 1 && self.offset_y[0] != 0.0 {
+            args.push("--offset-y".to_string());
+            args.push(self.offset_y[0].to_string());
+        } else if self.offset_y.len() > 1 {
+            args.push("--offset-y".to_string());
+            args.push(self.offset_y.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        // Output settings
+        if self.format != "mp4" {
+            args.push("--format".to_string());
+            args.push(self.format.clone());
+        }
+        
+        if self.fps != 24 {
+            args.push("--fps".to_string());
+            args.push(self.fps.to_string());
+        }
+        
+        if self.quality != 20 {
+            args.push("--quality".to_string());
+            args.push(self.quality.to_string());
+        }
+        
+        if let Some(ref resolution) = self.resolution {
+            args.push("--resolution".to_string());
+            args.push(resolution.clone());
+        }
+        
+        // Processing settings
+        if self.threads != 0 {
+            args.push("--threads".to_string());
+            args.push(self.threads.to_string());
+        }
+        
+        if let Some(start_frame) = self.start_frame {
+            args.push("--start-frame".to_string());
+            args.push(start_frame.to_string());
+        }
+        
+        if let Some(end_frame) = self.end_frame {
+            args.push("--end-frame".to_string());
+            args.push(end_frame.to_string());
+        }
+        
+        args
+    }
+    
+    /// Generate a preview of the CLI command
+    pub fn generate_command_preview(&self, input_dir: &Path, output_dir: &Path) -> String {
+        let args = self.generate_command_args(input_dir, output_dir);
+        format!("lapsify {}", args.join(" "))
+    }
 }
 
 /// Processing status for tracking time-lapse generation
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct ProcessingStatus {
     pub is_processing: bool,
     pub progress: f32,
@@ -658,6 +900,40 @@ pub struct ProcessingStatus {
     pub status_message: String,
     pub error_message: Option<String>,
     pub output_path: Option<PathBuf>,
+    pub process_handle: Option<ProcessHandle>,
+}
+
+/// Handle for managing CLI process execution
+pub struct ProcessHandle {
+    pub process_id: u32,
+    pub start_time: Instant,
+    pub cancel_sender: mpsc::Sender<()>,
+    pub progress_receiver: mpsc::Receiver<ProcessMessage>,
+}
+
+/// Messages from CLI process
+#[derive(Debug, Clone)]
+pub enum ProcessMessage {
+    Progress { current: usize, total: usize, message: String },
+    Output(String),
+    Error(String),
+    Finished { success: bool, output_path: Option<PathBuf> },
+}
+
+/// Commands to CLI process
+#[derive(Debug, Clone)]
+pub enum ProcessCommand {
+    Cancel,
+}
+
+/// CLI execution result
+#[derive(Debug, Clone)]
+pub struct CliResult {
+    pub success: bool,
+    pub output_path: Option<PathBuf>,
+    pub error_message: Option<String>,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 /// Thumbnail cache entry with metadata
@@ -669,6 +945,7 @@ pub struct ThumbnailCacheEntry {
 }
 
 /// LRU cache for thumbnails with memory management
+#[derive(Default)]
 pub struct ThumbnailCache {
     pub entries: HashMap<PathBuf, ThumbnailCacheEntry>,
     pub access_order: VecDeque<PathBuf>,
@@ -762,18 +1039,29 @@ pub enum ThumbnailLoadState {
 }
 
 /// UI state for managing interface elements
+#[derive(Serialize, Deserialize)]
 pub struct UiState {
     pub sidebar_width: f32,
     pub carousel_height: f32,
     pub show_settings_validation: bool,
+    #[serde(skip)]
     pub validation_errors: HashMap<String, String>,
     pub zoom_level: f32,
+    #[serde(skip)]
     pub pan_offset: egui::Vec2,
+    #[serde(skip)]
     pub folder_error: Option<String>,
+    #[serde(skip)]
     pub thumbnail_cache: ThumbnailCache,
+    #[serde(skip)]
     pub thumbnail_load_states: HashMap<PathBuf, ThumbnailLoadState>,
+    #[serde(skip)]
     pub carousel_scroll_offset: f32,
+    #[serde(skip)]
     pub visible_thumbnail_range: (usize, usize),
+    pub output_directory: Option<PathBuf>,
+    pub window_size: Option<(f32, f32)>,
+    pub window_position: Option<(f32, f32)>,
 }
 
 impl Default for UiState {
@@ -790,6 +1078,9 @@ impl Default for UiState {
             thumbnail_load_states: HashMap::new(),
             carousel_scroll_offset: 0.0,
             visible_thumbnail_range: (0, 0),
+            output_directory: None,
+            window_size: None,
+            window_position: None,
         }
     }
 }
@@ -946,6 +1237,320 @@ fn load_full_image_async(path: &PathBuf) -> Result<egui::ColorImage, String> {
     Ok(dynamic_image_to_color_image(&processed_img))
 }
 
+/// Execute lapsify CLI command with progress monitoring
+fn execute_lapsify_command_with_progress(
+    args: Vec<String>, 
+    output_dir: PathBuf, 
+    total_frames: usize,
+    progress_sender: mpsc::Sender<ProcessMessage>,
+    cancel_receiver: mpsc::Receiver<()>
+) -> Result<CliResult, String> {
+    // Try to find lapsify executable
+    let lapsify_cmd = find_lapsify_executable()?;
+    
+    println!("Executing: {} {}", lapsify_cmd, args.join(" "));
+    
+    // Send initial progress
+    let _ = progress_sender.send(ProcessMessage::Progress {
+        current: 0,
+        total: total_frames,
+        message: "Starting lapsify CLI...".to_string(),
+    });
+    
+    // Execute the command with streaming output
+    let mut command = Command::new(&lapsify_cmd);
+    command.args(&args);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    
+    let mut child = command.spawn()
+        .map_err(|e| format!("Failed to spawn lapsify command: {}", e))?;
+    
+    // Monitor process output and cancellation
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    
+    let stdout_reader = BufReader::new(stdout);
+    let stderr_reader = BufReader::new(stderr);
+    
+    let progress_sender_clone = progress_sender.clone();
+    let cancel_receiver_clone = Arc::new(Mutex::new(cancel_receiver));
+    
+    // Monitor stdout for progress information
+    let stdout_handle = {
+        let progress_sender = progress_sender_clone.clone();
+        thread::spawn(move || {
+            for line in stdout_reader.lines() {
+                if let Ok(line) = line {
+                    // Parse progress from CLI output
+                    if let Some((current, total)) = parse_progress_from_output(&line) {
+                        let _ = progress_sender.send(ProcessMessage::Progress {
+                            current,
+                            total,
+                            message: format!("Processing frame {} of {}", current, total),
+                        });
+                    } else {
+                        let _ = progress_sender.send(ProcessMessage::Output(line));
+                    }
+                }
+            }
+        })
+    };
+    
+    // Monitor stderr for errors
+    let stderr_handle = {
+        let progress_sender = progress_sender_clone.clone();
+        thread::spawn(move || {
+            for line in stderr_reader.lines() {
+                if let Ok(line) = line {
+                    let _ = progress_sender.send(ProcessMessage::Error(line));
+                }
+            }
+        })
+    };
+    
+    // Monitor for cancellation
+    let _cancel_handle = {
+        let cancel_receiver = cancel_receiver_clone.clone();
+        thread::spawn(move || {
+            if let Ok(cancel_receiver) = cancel_receiver.lock() {
+                if cancel_receiver.recv().is_ok() {
+                    // Process cancellation requested
+                    println!("Process cancellation requested");
+                }
+            }
+        })
+    };
+    
+    // Wait for process completion
+    let output = child.wait_with_output()
+        .map_err(|e| format!("Failed to wait for lapsify command: {}", e))?;
+    
+    // Clean up monitoring threads
+    let _ = stdout_handle.join();
+    let _ = stderr_handle.join();
+    
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    let success = output.status.success();
+    
+    // Try to determine output file path
+    let output_path = if success {
+        find_output_file(&output_dir, &args)
+    } else {
+        None
+    };
+    
+    let error_message = if !success {
+        Some(if stderr.is_empty() { 
+            "Command failed with unknown error".to_string() 
+        } else { 
+            stderr.clone() 
+        })
+    } else {
+        None
+    };
+    
+    // Send final progress message
+    let _ = progress_sender.send(ProcessMessage::Finished {
+        success,
+        output_path: output_path.clone(),
+    });
+    
+    Ok(CliResult {
+        success,
+        output_path,
+        error_message,
+        stdout,
+        stderr,
+    })
+}
+
+/// Execute lapsify CLI command (simple version for compatibility)
+fn execute_lapsify_command(args: Vec<String>, output_dir: PathBuf) -> Result<CliResult, String> {
+    let (progress_sender, _) = mpsc::channel();
+    let (_, cancel_receiver) = mpsc::channel();
+    execute_lapsify_command_with_progress(args, output_dir, 0, progress_sender, cancel_receiver)
+}
+
+/// Parse progress information from CLI output
+fn parse_progress_from_output(line: &str) -> Option<(usize, usize)> {
+    // Look for patterns like "Processing 5/100" or "Frame 5 of 100"
+    // Simple string parsing to avoid regex complexity
+    let line_lower = line.to_lowercase();
+    
+    if line_lower.contains("processing") || line_lower.contains("frame") {
+        // Extract numbers from the line
+        let numbers: Vec<usize> = line
+            .split_whitespace()
+            .filter_map(|word| {
+                // Try to parse numbers, including those with separators like "5/100"
+                if word.contains('/') {
+                    let parts: Vec<&str> = word.split('/').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(current), Ok(_total)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
+                            return Some(current); // Return current, we'll handle total separately
+                        }
+                    }
+                }
+                word.parse().ok()
+            })
+            .collect();
+        
+        if numbers.len() >= 2 {
+            Some((numbers[0], numbers[1]))
+        } else if numbers.len() == 1 {
+            Some((numbers[0], 0))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Find lapsify executable in system PATH or current directory
+fn find_lapsify_executable() -> Result<String, String> {
+    // Try different possible locations
+    let candidates = [
+        "lapsify",           // In PATH
+        "./lapsify",         // Current directory
+        "./target/debug/lapsify",    // Debug build
+        "./target/release/lapsify",  // Release build
+        "cargo run --bin lapsify --", // Fallback to cargo
+    ];
+    
+    for candidate in &candidates {
+        if candidate.starts_with("cargo") {
+            // Special case for cargo run
+            return Ok(candidate.to_string());
+        }
+        
+        // Test if executable exists and is runnable
+        if let Ok(output) = Command::new(candidate)
+            .arg("--help")
+            .output() 
+        {
+            if output.status.success() {
+                return Ok(candidate.to_string());
+            }
+        }
+    }
+    
+    Err("Could not find lapsify executable. Please ensure lapsify is installed or built.".to_string())
+}
+
+/// Find output file in the output directory
+fn find_output_file(output_dir: &Path, args: &[String]) -> Option<PathBuf> {
+    // Extract format from args
+    let format = args.iter()
+        .position(|arg| arg == "--format")
+        .and_then(|i| args.get(i + 1))
+        .unwrap_or(&"mp4".to_string())
+        .clone();
+    
+    // Look for files with the expected extension
+    let extensions = match format.as_str() {
+        "mp4" => vec!["mp4"],
+        "mov" => vec!["mov"],
+        "avi" => vec!["avi"],
+        "jpg" => vec!["jpg", "jpeg"],
+        "png" => vec!["png"],
+        "tiff" => vec!["tiff", "tif"],
+        _ => vec!["mp4"], // Default fallback
+    };
+    
+    // Look for recently created files with matching extensions
+    if let Ok(entries) = fs::read_dir(output_dir) {
+        let mut candidates: Vec<_> = entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                if let Some(ext) = entry.path().extension() {
+                    if let Some(ext_str) = ext.to_str() {
+                        return extensions.contains(&ext_str.to_lowercase().as_str());
+                    }
+                }
+                false
+            })
+            .collect();
+        
+        // Sort by modification time (most recent first)
+        candidates.sort_by(|a, b| {
+            let a_time = a.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+            let b_time = b.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+            b_time.cmp(&a_time)
+        });
+        
+        // Return the most recently created file
+        candidates.first().map(|entry| entry.path())
+    } else {
+        None
+    }
+}
+
+/// Get session directory for storing app data
+fn get_session_dir() -> Result<PathBuf, String> {
+    let home_dir = dirs::home_dir()
+        .ok_or("Could not find home directory")?;
+    
+    Ok(home_dir.join(".lapsify-gui"))
+}
+
+/// Create default settings presets
+fn create_default_presets() -> Vec<SettingsPreset> {
+    vec![
+        SettingsPreset {
+            name: "Default".to_string(),
+            description: "Standard time-lapse settings".to_string(),
+            settings: LapsifySettings::default(),
+        },
+        SettingsPreset {
+            name: "High Quality".to_string(),
+            description: "High quality video output with enhanced contrast".to_string(),
+            settings: LapsifySettings {
+                contrast: vec![1.2],
+                saturation: vec![1.1],
+                quality: 18,
+                fps: 30,
+                ..Default::default()
+            },
+        },
+        SettingsPreset {
+            name: "Fast Preview".to_string(),
+            description: "Quick preview with lower quality".to_string(),
+            settings: LapsifySettings {
+                quality: 28,
+                fps: 15,
+                resolution: Some("720p".to_string()),
+                ..Default::default()
+            },
+        },
+        SettingsPreset {
+            name: "Sunset Enhancement".to_string(),
+            description: "Enhanced colors for sunset/sunrise time-lapses".to_string(),
+            settings: LapsifySettings {
+                exposure: vec![0.3],
+                brightness: vec![5.0],
+                contrast: vec![1.3],
+                saturation: vec![1.4],
+                ..Default::default()
+            },
+        },
+        SettingsPreset {
+            name: "Night Sky".to_string(),
+            description: "Settings optimized for night sky time-lapses".to_string(),
+            settings: LapsifySettings {
+                exposure: vec![0.8],
+                brightness: vec![10.0],
+                contrast: vec![1.5],
+                saturation: vec![0.9],
+                ..Default::default()
+            },
+        },
+    ]
+}
+
 struct LapsifyApp {
     state: AppState,
     initialized: bool,
@@ -1085,6 +1690,152 @@ impl LapsifyApp {
         self.state.ui_state.visible_thumbnail_range = (start_index, end_index);
     }
     
+    /// Select output directory for processed results
+    fn select_output_directory(&mut self) {
+        if let Some(output_dir) = rfd::FileDialog::new()
+            .set_title("Select Output Directory")
+            .pick_folder()
+        {
+            self.state.ui_state.output_directory = Some(output_dir);
+        }
+    }
+    
+    /// Execute lapsify CLI with current settings
+    fn execute_lapsify_cli(&mut self, ctx: &egui::Context) -> Result<(), String> {
+        // Validate prerequisites
+        let input_dir = self.state.selected_folder.as_ref()
+            .ok_or("No input folder selected")?;
+        
+        let output_dir = self.state.ui_state.output_directory.as_ref()
+            .ok_or("No output directory selected")?;
+        
+        if self.state.images.is_empty() {
+            return Err("No images found in input folder".to_string());
+        }
+        
+        // Validate settings
+        let validation_errors = self.state.settings.validate();
+        if !validation_errors.is_empty() {
+            let error_count = validation_errors.len();
+            return Err(format!("Settings validation failed with {} errors. Please fix validation errors before processing.", error_count));
+        }
+        
+        // Generate command arguments
+        let args = self.state.settings.generate_command_args(input_dir, output_dir);
+        
+        // Set up communication channels
+        let (progress_sender, progress_receiver) = mpsc::channel();
+        let (cancel_sender, cancel_receiver) = mpsc::channel();
+        
+        // Set up processing status
+        self.state.processing_status.is_processing = true;
+        self.state.processing_status.progress = 0.0;
+        self.state.processing_status.current_frame = 0;
+        self.state.processing_status.total_frames = self.state.images.len();
+        self.state.processing_status.status_message = "Starting lapsify CLI...".to_string();
+        self.state.processing_status.error_message = None;
+        self.state.processing_status.output_path = None;
+        self.state.processing_status.process_handle = Some(ProcessHandle {
+            process_id: 0, // Will be set when process starts
+            start_time: Instant::now(),
+            cancel_sender,
+            progress_receiver,
+        });
+        
+        // Execute CLI in background thread with progress monitoring
+        let ctx_clone = ctx.clone();
+        let args_clone = args.clone();
+        let output_dir_clone = output_dir.clone();
+        let total_frames = self.state.images.len();
+        
+        thread::spawn(move || {
+            match execute_lapsify_command_with_progress(args_clone, output_dir_clone, total_frames, progress_sender, cancel_receiver) {
+                Ok(result) => {
+                    println!("CLI execution completed: {:?}", result);
+                    ctx_clone.request_repaint();
+                }
+                Err(error) => {
+                    println!("CLI execution failed: {}", error);
+                    ctx_clone.request_repaint();
+                }
+            }
+        });
+        
+        Ok(())
+    }
+    
+    /// Cancel current CLI execution
+    fn cancel_cli_execution(&mut self) {
+        if self.state.processing_status.is_processing {
+            if let Some(handle) = &self.state.processing_status.process_handle {
+                // Send cancel signal to background thread
+                let _ = handle.cancel_sender.send(());
+            }
+            
+            self.state.processing_status.is_processing = false;
+            self.state.processing_status.status_message = "Cancelling processing...".to_string();
+            self.state.processing_status.process_handle = None;
+        }
+    }
+    
+    /// Update processing status from background thread
+    fn update_processing_status(&mut self) {
+        let mut messages_to_process = Vec::new();
+        let mut should_clear_handle = false;
+        
+        // Collect messages without holding a borrow
+        if let Some(handle) = &self.state.processing_status.process_handle {
+            while let Ok(message) = handle.progress_receiver.try_recv() {
+                messages_to_process.push(message);
+            }
+        }
+        
+        // Process collected messages
+        for message in messages_to_process {
+            match message {
+                ProcessMessage::Progress { current, total, message } => {
+                    self.state.processing_status.current_frame = current;
+                    self.state.processing_status.total_frames = total;
+                    self.state.processing_status.progress = if total > 0 {
+                        current as f32 / total as f32
+                    } else {
+                        0.0
+                    };
+                    self.state.processing_status.status_message = message;
+                }
+                ProcessMessage::Output(output) => {
+                    // Update status with CLI output
+                    self.state.processing_status.status_message = format!("Processing: {}", output);
+                }
+                ProcessMessage::Error(error) => {
+                    self.state.processing_status.error_message = Some(error);
+                    self.state.processing_status.is_processing = false;
+                    should_clear_handle = true;
+                }
+                ProcessMessage::Finished { success, output_path } => {
+                    self.state.processing_status.is_processing = false;
+                    should_clear_handle = true;
+                    
+                    if success {
+                        self.state.processing_status.status_message = "Processing completed successfully!".to_string();
+                        self.state.processing_status.output_path = output_path;
+                        self.state.processing_status.progress = 1.0;
+                    } else {
+                        self.state.processing_status.status_message = "Processing failed".to_string();
+                        if self.state.processing_status.error_message.is_none() {
+                            self.state.processing_status.error_message = Some("Unknown error occurred".to_string());
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Clear handle if needed
+        if should_clear_handle {
+            self.state.processing_status.process_handle = None;
+        }
+    }
+    
     /// Handle zoom input
     fn handle_zoom(&mut self, delta: f32) {
         let new_zoom = (self.state.ui_state.zoom_level + delta * ZOOM_SPEED).clamp(MIN_ZOOM, MAX_ZOOM);
@@ -1104,6 +1855,82 @@ impl LapsifyApp {
         let scale = scale_x.min(scale_y) * self.state.ui_state.zoom_level;
         
         egui::Vec2::new(image_size.x * scale, image_size.y * scale)
+    }
+    
+    /// Save current settings to file
+    fn save_settings_to_file(&self) -> Result<(), String> {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Save Settings")
+            .add_filter("JSON files", &["json"])
+            .set_file_name("lapsify_settings.json")
+            .save_file()
+        {
+            self.state.settings.save_to_file(&path)
+                .map_err(|e| format!("Failed to save settings: {}", e))?;
+        }
+        Ok(())
+    }
+    
+    /// Load settings from file
+    fn load_settings_from_file(&mut self) -> Result<(), String> {
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Load Settings")
+            .add_filter("JSON files", &["json"])
+            .pick_file()
+        {
+            self.state.settings = LapsifySettings::load_from_file(&path)
+                .map_err(|e| format!("Failed to load settings: {}", e))?;
+            self.state.validate_settings();
+        }
+        Ok(())
+    }
+    
+    /// Apply settings preset
+    fn apply_preset(&mut self, preset_index: usize) {
+        if let Some(preset) = self.state.settings_presets.get(preset_index) {
+            self.state.settings = preset.settings.clone();
+            self.state.validate_settings();
+        }
+    }
+    
+    /// Save current settings as new preset
+    fn save_as_preset(&mut self, name: String, description: String) {
+        let preset = SettingsPreset {
+            name,
+            description,
+            settings: self.state.settings.clone(),
+        };
+        
+        self.state.settings_presets.push(preset);
+        let _ = self.state.save_presets();
+    }
+    
+    /// Update window state for persistence
+    fn update_window_state(&mut self, ctx: &egui::Context) {
+        let viewport = ctx.input(|i| i.viewport().clone());
+        if let Some(inner_rect) = viewport.inner_rect {
+            self.state.ui_state.window_size = Some((inner_rect.width(), inner_rect.height()));
+            self.state.ui_state.window_position = Some((inner_rect.min.x, inner_rect.min.y));
+        }
+    }
+    
+    /// Apply responsive layout adjustments
+    fn apply_responsive_layout(&mut self, available_size: egui::Vec2) {
+        // Adjust sidebar width based on screen size
+        let min_sidebar_width = 250.0;
+        let max_sidebar_width = 400.0;
+        let optimal_sidebar_ratio = 0.25; // 25% of screen width
+        
+        let optimal_width = available_size.x * optimal_sidebar_ratio;
+        self.state.ui_state.sidebar_width = optimal_width.clamp(min_sidebar_width, max_sidebar_width);
+        
+        // Adjust carousel height based on screen size
+        let min_carousel_height = 100.0;
+        let max_carousel_height = 250.0;
+        let optimal_carousel_ratio = 0.2; // 20% of screen height
+        
+        let optimal_height = available_size.y * optimal_carousel_ratio;
+        self.state.ui_state.carousel_height = optimal_height.clamp(min_carousel_height, max_carousel_height);
     }
     
     /// Show array input widget for animation parameters with validation
@@ -1722,14 +2549,155 @@ impl LapsifyApp {
                 
                 ui.add_space(10.0);
                 
+                // CLI Execution
+                ui.collapsing("Process Time-lapse", |ui| {
+                    // Output directory selection
+                    ui.horizontal(|ui| {
+                        if ui.button("📁 Select Output Folder").clicked() {
+                            self.select_output_directory();
+                        }
+                    });
+                    
+                    if let Some(output_dir) = &self.state.ui_state.output_directory {
+                        ui.horizontal(|ui| {
+                            ui.label("Output:");
+                            ui.label(output_dir.display().to_string());
+                        });
+                    } else {
+                        ui.label("No output folder selected");
+                    }
+                    
+                    ui.add_space(5.0);
+                    
+                    // Command preview
+                    if let (Some(input_dir), Some(output_dir)) = (&self.state.selected_folder, &self.state.ui_state.output_directory) {
+                        ui.collapsing("Command Preview", |ui| {
+                            let command_preview = self.state.settings.generate_command_preview(input_dir, output_dir);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.code(&command_preview);
+                            });
+                        });
+                    }
+                    
+                    ui.add_space(5.0);
+                    
+                    // Processing status and controls
+                    if self.state.processing_status.is_processing {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(&self.state.processing_status.status_message);
+                        });
+                        
+                        // Progress bar
+                        let progress = self.state.processing_status.progress;
+                        ui.add(egui::ProgressBar::new(progress).text(format!("{:.1}%", progress * 100.0)));
+                        
+                        // Frame progress
+                        if self.state.processing_status.total_frames > 0 {
+                            ui.label(format!("Frame {} of {}", 
+                                self.state.processing_status.current_frame,
+                                self.state.processing_status.total_frames));
+                        }
+                        
+                        // Cancel button
+                        if ui.button("❌ Cancel Processing").clicked() {
+                            self.cancel_cli_execution();
+                        }
+                    } else {
+                        // Execute button
+                        let can_execute = self.state.selected_folder.is_some() 
+                            && self.state.ui_state.output_directory.is_some()
+                            && !self.state.images.is_empty()
+                            && self.state.ui_state.validation_errors.is_empty();
+                        
+                        ui.add_enabled_ui(can_execute, |ui| {
+                            if ui.button("🚀 Start Processing").clicked() {
+                                match self.execute_lapsify_cli(ui.ctx()) {
+                                    Ok(()) => {
+                                        // Processing started successfully
+                                    }
+                                    Err(error) => {
+                                        self.state.processing_status.error_message = Some(error);
+                                    }
+                                }
+                            }
+                        });
+                        
+                        if !can_execute {
+                            ui.label("⚠ Requirements:");
+                            if self.state.selected_folder.is_none() {
+                                ui.label("• Select input folder");
+                            }
+                            if self.state.ui_state.output_directory.is_none() {
+                                ui.label("• Select output folder");
+                            }
+                            if self.state.images.is_empty() {
+                                ui.label("• Input folder must contain images");
+                            }
+                            if !self.state.ui_state.validation_errors.is_empty() {
+                                ui.label("• Fix validation errors");
+                            }
+                        }
+                    }
+                    
+                    // Show processing results
+                    if let Some(error) = &self.state.processing_status.error_message {
+                        ui.add_space(5.0);
+                        ui.colored_label(ui.visuals().error_fg_color, format!("❌ Error: {}", error));
+                    }
+                    
+                    if let Some(output_path) = &self.state.processing_status.output_path {
+                        ui.add_space(5.0);
+                        ui.colored_label(ui.visuals().selection.bg_fill, "✅ Processing completed!");
+                        ui.horizontal(|ui| {
+                            ui.label("Output:");
+                            ui.label(output_path.display().to_string());
+                        });
+                        
+                        if ui.button("📁 Open Output Folder").clicked() {
+                            if let Some(parent) = output_path.parent() {
+                                let _ = std::process::Command::new("open")
+                                    .arg(parent)
+                                    .spawn();
+                            }
+                        }
+                    }
+                });
+                
+                ui.add_space(10.0);
+                
                 // Settings Management
                 ui.collapsing("Settings Management", |ui| {
+                    // Presets
+                    ui.label("Presets:");
+                    let mut selected_preset = None;
+                    egui::ComboBox::from_id_source("presets_combo")
+                        .selected_text("Select Preset")
+                        .show_ui(ui, |ui| {
+                            for (i, preset) in self.state.settings_presets.iter().enumerate() {
+                                if ui.selectable_label(false, &preset.name).clicked() {
+                                    selected_preset = Some(i);
+                                }
+                            }
+                        });
+                    
+                    if let Some(preset_index) = selected_preset {
+                        self.apply_preset(preset_index);
+                    }
+                    
+                    ui.add_space(5.0);
+                    
+                    // Save/Load
                     ui.horizontal(|ui| {
                         if ui.button("💾 Save Settings").clicked() {
-                            // TODO: Implement settings save
+                            if let Err(error) = self.save_settings_to_file() {
+                                println!("Failed to save settings: {}", error);
+                            }
                         }
                         if ui.button("📁 Load Settings").clicked() {
-                            // TODO: Implement settings load
+                            if let Err(error) = self.load_settings_from_file() {
+                                println!("Failed to load settings: {}", error);
+                            }
                         }
                     });
                     
@@ -1738,7 +2706,17 @@ impl LapsifyApp {
                             self.state.settings = LapsifySettings::default();
                             self.state.validate_settings();
                         }
+                        if ui.button("💾 Save as Preset").clicked() {
+                            // TODO: Show dialog for preset name/description
+                            self.save_as_preset(
+                                "Custom Preset".to_string(),
+                                "User-defined preset".to_string()
+                            );
+                        }
                     });
+                    
+                    ui.add_space(5.0);
+                    ui.label("💡 Tip: Presets are automatically saved and restored between sessions.");
                 });
                 
                 ui.add_space(10.0);
@@ -2354,39 +3332,104 @@ impl LapsifyApp {
 
 impl eframe::App for LapsifyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Initialize test data on first run
+        // Initialize on first run
         if !self.initialized {
-            self.init_test_data();
+            // Load session state
+            if let Err(error) = self.state.load_session() {
+                println!("Failed to load session: {}", error);
+            }
+            
+            // Load presets
+            if let Err(error) = self.state.load_presets() {
+                println!("Failed to load presets: {}", error);
+            }
+            
+            // Apply window state if available
+            if let (Some((width, height)), Some((x, y))) = (self.state.ui_state.window_size, self.state.ui_state.window_position) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(width, height)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::Pos2::new(x, y)));
+            }
+            
+            // Rescan images if folder was restored
+            if self.state.selected_folder.is_some() {
+                let _ = self.state.scan_images();
+            }
+            
             self.initialized = true;
         }
         
-        // Left sidebar panel for settings
+        // Update processing status from background thread
+        self.update_processing_status();
+        
+        // Update window state for persistence
+        self.update_window_state(ctx);
+        
+        // Apply responsive layout
+        let screen_size = ctx.screen_rect().size();
+        self.apply_responsive_layout(screen_size);
+        
+        // Left sidebar panel for settings with responsive constraints
+        let min_sidebar = 250.0_f32.max(screen_size.x * 0.15);
+        let max_sidebar = 400.0_f32.min(screen_size.x * 0.35);
+        
         let sidebar_response = egui::SidePanel::left("settings_sidebar")
             .resizable(true)
             .default_width(self.state.ui_state.sidebar_width)
-            .width_range(250.0..=400.0)
+            .width_range(min_sidebar..=max_sidebar)
             .show(ctx, |ui| {
                 self.show_settings_sidebar(ui);
             });
         
         // Update stored sidebar width if it was resized
-        self.state.ui_state.sidebar_width = sidebar_response.response.rect.width();
+        if (self.state.ui_state.sidebar_width - sidebar_response.response.rect.width()).abs() > 1.0 {
+            self.state.ui_state.sidebar_width = sidebar_response.response.rect.width();
+        }
 
-        // Bottom panel for thumbnail carousel
+        // Bottom panel for thumbnail carousel with responsive constraints
+        let min_carousel = 100.0_f32.max(screen_size.y * 0.1);
+        let max_carousel = 250.0_f32.min(screen_size.y * 0.3);
+        
         let carousel_response = egui::TopBottomPanel::bottom("thumbnail_carousel")
             .resizable(true)
             .default_height(self.state.ui_state.carousel_height)
-            .height_range(100.0..=250.0)
+            .height_range(min_carousel..=max_carousel)
             .show(ctx, |ui| {
                 self.show_thumbnail_carousel(ui);
             });
         
         // Update stored carousel height if it was resized
-        self.state.ui_state.carousel_height = carousel_response.response.rect.height();
+        if (self.state.ui_state.carousel_height - carousel_response.response.rect.height()).abs() > 1.0 {
+            self.state.ui_state.carousel_height = carousel_response.response.rect.height();
+        }
 
         // Central panel for main image viewer
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_main_viewer(ui);
         });
+        
+        // Save session state periodically (every 30 seconds or on significant changes)
+        static mut LAST_SAVE: Option<Instant> = None;
+        let should_save = unsafe {
+            match LAST_SAVE {
+                None => true,
+                Some(last) => last.elapsed().as_secs() > 30,
+            }
+        };
+        
+        if should_save {
+            if let Err(error) = self.state.save_session() {
+                println!("Failed to save session: {}", error);
+            }
+            unsafe {
+                LAST_SAVE = Some(Instant::now());
+            }
+        }
+    }
+    
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        // Save session state when app is closing
+        if let Err(error) = self.state.save_session() {
+            println!("Failed to save session on exit: {}", error);
+        }
     }
 }

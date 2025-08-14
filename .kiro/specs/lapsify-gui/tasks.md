@@ -90,7 +90,7 @@
   - _Requirements: 4.2, 4.3_
 
 -
-  12. [ ] Create CLI integration system
+  12. [x] Create CLI integration system
   - Implement command generation from settings struct
   - Add process execution for lapsify CLI with parameter passing
   - Create output directory selection for processed results
@@ -98,7 +98,7 @@
   - _Requirements: 5.1, 5.4_
 
 -
-  13. [ ] Build progress tracking and cancellation
+  13. [x] Build progress tracking and cancellation
   - Implement progress indicator UI for time-lapse generation
   - Add cancellation button and process termination handling
   - Create progress updates from CLI execution monitoring
@@ -106,7 +106,7 @@
   - _Requirements: 5.2, 5.3, 5.4_
 
 -
-  14. [ ] Add responsive layout and window management
+  14. [x] Add responsive layout and window management
   - Implement pane resizing with minimum size constraints
   - Add window size persistence between sessions
   - Create responsive behavior for different screen sizes
@@ -114,7 +114,7 @@
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
 -
-  15. [ ] Implement settings persistence and presets
+  15. [x] Implement settings persistence and presets
   - Add save/load functionality for settings to JSON files
   - Create settings presets for common configurations
   - Implement session state persistence for current folder and settings
