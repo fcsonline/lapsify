@@ -377,7 +377,7 @@ impl LapsifySettings {
             if value < -3.0 || value > 3.0 {
                 errors.insert(
                     format!("exposure[{}]", i),
-                    format!("Exposure value {} is outside valid range [-3.0, 3.0]", value)
+                    format!("Exposure value {:.2} is outside valid range [-3.0, 3.0] EV", value)
                 );
             }
         }
@@ -387,7 +387,7 @@ impl LapsifySettings {
             if value < -100.0 || value > 100.0 {
                 errors.insert(
                     format!("brightness[{}]", i),
-                    format!("Brightness value {} is outside valid range [-100.0, 100.0]", value)
+                    format!("Brightness value {:.1} is outside valid range [-100, 100]", value)
                 );
             }
         }
@@ -397,7 +397,7 @@ impl LapsifySettings {
             if value < 0.1 || value > 3.0 {
                 errors.insert(
                     format!("contrast[{}]", i),
-                    format!("Contrast value {} is outside valid range [0.1, 3.0]", value)
+                    format!("Contrast value {:.2}x is outside valid range [0.1, 3.0]", value)
                 );
             }
         }
@@ -407,7 +407,26 @@ impl LapsifySettings {
             if value < 0.0 || value > 2.0 {
                 errors.insert(
                     format!("saturation[{}]", i),
-                    format!("Saturation value {} is outside valid range [0.0, 2.0]", value)
+                    format!("Saturation value {:.2}x is outside valid range [0.0, 2.0]", value)
+                );
+            }
+        }
+        
+        // Validate offset values (reasonable range)
+        for (i, &value) in self.offset_x.iter().enumerate() {
+            if value < -5000.0 || value > 5000.0 {
+                errors.insert(
+                    format!("offset_x[{}]", i),
+                    format!("X offset value {:.0}px is outside reasonable range [-5000, 5000]", value)
+                );
+            }
+        }
+        
+        for (i, &value) in self.offset_y.iter().enumerate() {
+            if value < -5000.0 || value > 5000.0 {
+                errors.insert(
+                    format!("offset_y[{}]", i),
+                    format!("Y offset value {:.0}px is outside reasonable range [-5000, 5000]", value)
                 );
             }
         }
@@ -428,12 +447,26 @@ impl LapsifySettings {
             );
         }
         
+        // Validate threads (0 to 32)
+        if self.threads > 32 {
+            errors.insert(
+                "threads".to_string(),
+                format!("Thread count {} is outside reasonable range [0, 32]", self.threads)
+            );
+        }
+        
         // Validate frame range
         if let (Some(start), Some(end)) = (self.start_frame, self.end_frame) {
             if start > end {
                 errors.insert(
                     "frame_range".to_string(),
-                    "Start frame must be less than or equal to end frame".to_string()
+                    format!("Start frame ({}) must be less than or equal to end frame ({})", start, end)
+                );
+            }
+            if start == 0 && end == 0 {
+                errors.insert(
+                    "frame_range".to_string(),
+                    "Frame range cannot be 0-0. Use default values instead.".to_string()
                 );
             }
         }
@@ -446,6 +479,169 @@ impl LapsifySettings {
                 format!("Format '{}' is not supported. Valid formats: {}", 
                     self.format, valid_formats.join(", "))
             );
+        }
+        
+        // Validate resolution format if provided
+        if let Some(ref resolution) = self.resolution {
+            if !resolution.is_empty() {
+                let valid_presets = ["4K", "HD", "1080p", "720p"];
+                let is_preset = valid_presets.iter().any(|&preset| 
+                    resolution.to_lowercase() == preset.to_lowercase()
+                );
+                
+                if !is_preset {
+                    // Check if it's a valid WIDTHxHEIGHT format
+                    let parts: Vec<&str> = resolution.split('x').collect();
+                    if parts.len() != 2 {
+                        errors.insert(
+                            "resolution".to_string(),
+                            format!("Resolution '{}' must be in format 'WIDTHxHEIGHT' (e.g., 1920x1080) or a preset (4K, HD, 1080p, 720p)", resolution)
+                        );
+                    } else {
+                        // Validate width and height are numbers
+                        if parts[0].parse::<u32>().is_err() || parts[1].parse::<u32>().is_err() {
+                            errors.insert(
+                                "resolution".to_string(),
+                                format!("Resolution '{}' contains invalid numbers. Use format 'WIDTHxHEIGHT' (e.g., 1920x1080)", resolution)
+                            );
+                        } else {
+                            let width: u32 = parts[0].parse().unwrap();
+                            let height: u32 = parts[1].parse().unwrap();
+                            if width < 64 || height < 64 {
+                                errors.insert(
+                                    "resolution".to_string(),
+                                    format!("Resolution {}x{} is too small. Minimum is 64x64", width, height)
+                                );
+                            }
+                            if width > 7680 || height > 4320 {
+                                errors.insert(
+                                    "resolution".to_string(),
+                                    format!("Resolution {}x{} is too large. Maximum is 7680x4320 (8K)", width, height)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Validate crop format if provided
+        if let Some(ref crop_str) = self.crop {
+            let parts: Vec<&str> = crop_str.split(':').collect();
+            if parts.len() != 4 {
+                errors.insert(
+                    "crop".to_string(),
+                    format!("Crop format '{}' is invalid. Must be 'width:height:x:y' (e.g., '1920:1080:100:50' or '80%:60%:10%:20%')", crop_str)
+                );
+            } else {
+                // Validate each crop parameter
+                for (i, part) in parts.iter().enumerate() {
+                    let param_name = match i {
+                        0 => "crop width",
+                        1 => "crop height", 
+                        2 => "crop x offset",
+                        3 => "crop y offset",
+                        _ => "crop parameter"
+                    };
+                    
+                    if part.ends_with('%') {
+                        // Percentage value
+                        let percent_str = &part[..part.len()-1];
+                        match percent_str.parse::<f32>() {
+                            Ok(percent) => {
+                                if percent < 0.0 || percent > 100.0 {
+                                    errors.insert(
+                                        format!("crop_{}", i),
+                                        format!("{} percentage {:.1}% is outside valid range [0, 100]", param_name, percent)
+                                    );
+                                }
+                            }
+                            Err(_) => {
+                                errors.insert(
+                                    format!("crop_{}", i),
+                                    format!("{} '{}' is not a valid percentage", param_name, part)
+                                );
+                            }
+                        }
+                    } else {
+                        // Pixel value
+                        match part.parse::<f32>() {
+                            Ok(pixels) => {
+                                if i < 2 && pixels <= 0.0 {
+                                    errors.insert(
+                                        format!("crop_{}", i),
+                                        format!("{} {:.0}px must be greater than 0", param_name, pixels)
+                                    );
+                                }
+                                if pixels.abs() > 10000.0 {
+                                    errors.insert(
+                                        format!("crop_{}", i),
+                                        format!("{} {:.0}px is outside reasonable range [-10000, 10000]", param_name, pixels)
+                                    );
+                                }
+                            }
+                            Err(_) => {
+                                errors.insert(
+                                    format!("crop_{}", i),
+                                    format!("{} '{}' is not a valid number", param_name, part)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Parameter interdependency validation
+        let _is_video_format = matches!(self.format.as_str(), "mp4" | "mov" | "avi");
+        let is_image_format = matches!(self.format.as_str(), "jpg" | "png" | "tiff");
+        
+        if is_image_format {
+            // For image formats, FPS and quality don't apply
+            if self.fps != 24 {
+                errors.insert(
+                    "format_fps_conflict".to_string(),
+                    format!("FPS setting is ignored for image format '{}'. Only applies to video formats.", self.format)
+                );
+            }
+            if self.quality != 20 {
+                errors.insert(
+                    "format_quality_conflict".to_string(),
+                    format!("Quality (CRF) setting is ignored for image format '{}'. Only applies to video formats.", self.format)
+                );
+            }
+        }
+        
+        // Array length consistency warnings
+        let array_lengths = [
+            self.exposure.len(),
+            self.brightness.len(), 
+            self.contrast.len(),
+            self.saturation.len(),
+            self.offset_x.len(),
+            self.offset_y.len()
+        ];
+        let max_array_len = array_lengths.iter().max().unwrap_or(&1);
+        
+        if *max_array_len > 1 {
+            let arrays = [
+                ("exposure", self.exposure.len()),
+                ("brightness", self.brightness.len()),
+                ("contrast", self.contrast.len()),
+                ("saturation", self.saturation.len()),
+                ("offset_x", self.offset_x.len()),
+                ("offset_y", self.offset_y.len()),
+            ];
+            
+            for (name, len) in arrays {
+                if len > 1 && len != *max_array_len {
+                    errors.insert(
+                        format!("{}_array_length", name),
+                        format!("{} array has {} values but max array length is {}. Consider matching lengths for consistent animation.", 
+                            name, len, max_array_len)
+                    );
+                }
+            }
         }
         
         errors
@@ -702,6 +898,9 @@ const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 10.0;
 const ZOOM_SPEED: f32 = 0.1;
 
+// Settings constants
+const ARRAY_INPUT_WIDTH: f32 = 200.0;
+
 /// Load thumbnail asynchronously
 fn load_thumbnail_async(path: &PathBuf) -> Result<(egui::ColorImage, usize), String> {
     // Load the image
@@ -898,13 +1097,229 @@ impl LapsifyApp {
         self.state.ui_state.pan_offset = egui::Vec2::ZERO;
     }
     
-    /// Calculate image display size maintaining aspect ratio
+        /// Calculate image display size maintaining aspect ratio
     fn calculate_image_display_size(&self, image_size: egui::Vec2, available_size: egui::Vec2) -> egui::Vec2 {
         let scale_x = available_size.x / image_size.x;
         let scale_y = available_size.y / image_size.y;
         let scale = scale_x.min(scale_y) * self.state.ui_state.zoom_level;
         
         egui::Vec2::new(image_size.x * scale, image_size.y * scale)
+    }
+    
+    /// Show array input widget for animation parameters with validation
+    fn show_array_input(ui: &mut egui::Ui, label: &str, values: &mut Vec<f32>, min: f32, max: f32, unit: &str, validation_errors: &HashMap<String, String>) -> bool {
+        let mut changed = false;
+        
+        // Check if this parameter has validation errors
+        let param_key = label.to_lowercase().replace(" ", "_");
+        let has_errors = validation_errors.keys().any(|k| k.starts_with(&param_key));
+        
+        ui.horizontal(|ui| {
+            // Show error indicator if there are validation errors
+            if has_errors {
+                ui.colored_label(ui.visuals().error_fg_color, "⚠");
+            }
+            
+            ui.label(format!("{}:", label));
+            ui.add_space(5.0);
+            
+            // Show current values as comma-separated string
+            let values_str = values.iter()
+                .map(|v| format!("{:.2}", v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            
+            let text_color = if has_errors {
+                ui.visuals().error_fg_color
+            } else {
+                ui.visuals().text_color()
+            };
+            
+            ui.colored_label(text_color, format!("[{}] {}", values_str, unit));
+        });
+        
+        // Show validation errors for this parameter
+        for (error_key, error_msg) in validation_errors {
+            if error_key.starts_with(&param_key) {
+                ui.indent("error_indent", |ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error_msg));
+                });
+            }
+        }
+        
+        // Individual value controls
+        ui.indent("array_controls", |ui| {
+            let mut to_remove = None;
+            let values_len = values.len();
+            
+            for (i, value) in values.iter_mut().enumerate() {
+                // Check if this specific array element has an error
+                let element_key = format!("{}[{}]", param_key, i);
+                let element_has_error = validation_errors.contains_key(&element_key);
+                
+                ui.horizontal(|ui| {
+                    if element_has_error {
+                        ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                    }
+                    
+                    ui.label(format!("{}:", i + 1));
+                    
+                    let mut slider = egui::Slider::new(value, min..=max)
+                        .step_by(0.01)
+                        .fixed_decimals(2);
+                    
+                    // Color the slider differently if there's an error
+                    if element_has_error {
+                        slider = slider.text_color(ui.visuals().error_fg_color);
+                    }
+                    
+                    let response = ui.add(slider);
+                    
+                    if response.changed() {
+                        changed = true;
+                    }
+                    
+                    ui.label(unit);
+                    
+                    // Remove button (only if more than one value)
+                    if values_len > 1 && ui.small_button("❌").clicked() {
+                        to_remove = Some(i);
+                        changed = true;
+                    }
+                });
+            }
+            
+            // Remove value if requested
+            if let Some(index) = to_remove {
+                values.remove(index);
+            }
+            
+            // Add value button
+            ui.horizontal(|ui| {
+                if ui.button("+ Add Value").clicked() {
+                    values.push(values.last().copied().unwrap_or(0.0));
+                    changed = true;
+                }
+                
+                // Reset to single value button
+                if values.len() > 1 && ui.button("Reset to Single").clicked() {
+                    let first_value = values[0];
+                    values.clear();
+                    values.push(first_value);
+                    changed = true;
+                }
+            });
+        });
+        
+        changed
+    }
+    
+    /// Show crop parameter input with validation
+    fn show_crop_input(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let validation_errors = &self.state.ui_state.validation_errors;
+        
+        // Check for crop-related errors
+        let has_crop_errors = validation_errors.keys().any(|k| k.starts_with("crop"));
+        
+        ui.horizontal(|ui| {
+            if has_crop_errors {
+                ui.colored_label(ui.visuals().error_fg_color, "⚠");
+            }
+            ui.label("Crop:");
+            
+            let crop_enabled = self.state.settings.crop.is_some();
+            let mut enable_crop = crop_enabled;
+            
+            if ui.checkbox(&mut enable_crop, "Enable").changed() {
+                if enable_crop && !crop_enabled {
+                    // Enable crop with default values
+                    self.state.settings.crop = Some("50%:50%:25%:25%".to_string());
+                    changed = true;
+                } else if !enable_crop && crop_enabled {
+                    // Disable crop
+                    self.state.settings.crop = None;
+                    changed = true;
+                }
+            }
+        });
+        
+        // Show crop validation errors
+        for (key, error) in validation_errors {
+            if key == "crop" {
+                ui.indent("crop_error", |ui| {
+                    ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                });
+            }
+        }
+        
+        if let Some(crop_str) = &mut self.state.settings.crop {
+            ui.indent("crop_controls", |ui| {
+                // Parse current crop values
+                let parts: Vec<&str> = crop_str.split(':').collect();
+                if parts.len() == 4 {
+                    let mut width_str = parts[0].to_string();
+                    let mut height_str = parts[1].to_string();
+                    let mut x_str = parts[2].to_string();
+                    let mut y_str = parts[3].to_string();
+                    
+                    ui.horizontal(|ui| {
+                        // Check for individual crop parameter errors
+                        if validation_errors.contains_key("crop_0") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("Width:");
+                        if ui.text_edit_singleline(&mut width_str).changed() {
+                            changed = true;
+                        }
+                        
+                        if validation_errors.contains_key("crop_1") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("Height:");
+                        if ui.text_edit_singleline(&mut height_str).changed() {
+                            changed = true;
+                        }
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        if validation_errors.contains_key("crop_2") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("X offset:");
+                        if ui.text_edit_singleline(&mut x_str).changed() {
+                            changed = true;
+                        }
+                        
+                        if validation_errors.contains_key("crop_3") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("Y offset:");
+                        if ui.text_edit_singleline(&mut y_str).changed() {
+                            changed = true;
+                        }
+                    });
+                    
+                    // Show individual crop parameter errors
+                    for i in 0..4 {
+                        if let Some(error) = validation_errors.get(&format!("crop_{}", i)) {
+                            ui.indent("crop_param_error", |ui| {
+                                ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                            });
+                        }
+                    }
+                    
+                    if changed {
+                        *crop_str = format!("{}:{}:{}:{}", width_str, height_str, x_str, y_str);
+                    }
+                    
+                    ui.label("Format: width:height:x:y (use % for percentages)");
+                    ui.label("Example: 1920:1080:100:50 or 80%:60%:10%:20%");
+                }
+            });
+        }
+        
+        changed
     }
 
     /// Display the settings sidebar panel
@@ -941,61 +1356,7 @@ impl LapsifyApp {
                 ui.horizontal(|ui| {
                     ui.colored_label(ui.visuals().selection.bg_fill, "✓");
                     ui.label(format!("{} images found", self.state.images.len()));
-                    
-                    // Show supported formats info
-                    if ui.small_button("ℹ").clicked() {
-                        // This could open a tooltip or info dialog
-                    }
                 });
-                
-                // Show some basic stats if images are loaded
-                if !self.state.images.is_empty() {
-                    ui.collapsing("Image Details", |ui| {
-                        if let Some(selected_image) = self.state.get_selected_image() {
-                            ui.label(format!("Selected: {}", 
-                                selected_image.path.file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()));
-                            ui.label(format!("Format: {}", selected_image.metadata.format));
-                            ui.label(format!("Size: {}x{}", 
-                                selected_image.metadata.width, 
-                                selected_image.metadata.height));
-                            ui.label(format!("File size: {:.1} MB", 
-                                selected_image.metadata.file_size as f64 / 1_048_576.0));
-                            
-                            // Show thumbnail status
-                            let thumbnail_status = if selected_image.thumbnail.is_some() {
-                                "✓ Thumbnail loaded"
-                            } else {
-                                "⏳ Thumbnail not loaded"
-                            };
-                            ui.label(thumbnail_status);
-                        }
-                    });
-                    
-                    // Show thumbnail cache statistics
-                    ui.collapsing("Thumbnail Cache", |ui| {
-                        let cache = &self.state.ui_state.thumbnail_cache;
-                        ui.label(format!("Cached: {}/{} thumbnails", 
-                            cache.entries.len(), cache.max_entries));
-                        ui.label(format!("Memory: {:.1}/{} MB", 
-                            cache.memory_usage_mb(), cache.max_memory_mb));
-                        
-                        // Cache management buttons
-                        ui.horizontal(|ui| {
-                            if ui.button("Load Visible Thumbnails").clicked() {
-                                self.load_visible_thumbnails(ui.ctx());
-                            }
-                            if ui.button("Clear Cache").clicked() {
-                                self.state.ui_state.thumbnail_cache.clear();
-                                // Clear thumbnail references in images
-                                for image in &mut self.state.images {
-                                    image.thumbnail = None;
-                                }
-                            }
-                        });
-                    });
-                }
             }
         } else {
             ui.label("No folder selected");
@@ -1008,48 +1369,506 @@ impl LapsifyApp {
         
         ui.separator();
         
-        // Test data controls (for development)
-        ui.collapsing("Development Tools", |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Load Test Data").clicked() {
-                    self.init_test_data();
+        // Lapsify Parameters
+        ui.heading("Lapsify Parameters");
+        
+        egui::ScrollArea::vertical()
+            .id_source("settings_scroll")
+            .show(ui, |ui| {
+                // Image Adjustments
+                ui.collapsing("Image Adjustments", |ui| {
+                    let mut settings_changed = false;
+                    let validation_errors = &self.state.ui_state.validation_errors;
+                    
+                    // Exposure
+                    if Self::show_array_input(ui, "Exposure", &mut self.state.settings.exposure, -3.0, 3.0, "EV", validation_errors) {
+                        settings_changed = true;
+                    }
+                    ui.add_space(5.0);
+                    
+                    // Brightness
+                    if Self::show_array_input(ui, "Brightness", &mut self.state.settings.brightness, -100.0, 100.0, "", validation_errors) {
+                        settings_changed = true;
+                    }
+                    ui.add_space(5.0);
+                    
+                    // Contrast
+                    if Self::show_array_input(ui, "Contrast", &mut self.state.settings.contrast, 0.1, 3.0, "x", validation_errors) {
+                        settings_changed = true;
+                    }
+                    ui.add_space(5.0);
+                    
+                    // Saturation
+                    if Self::show_array_input(ui, "Saturation", &mut self.state.settings.saturation, 0.0, 2.0, "x", validation_errors) {
+                        settings_changed = true;
+                    }
+                    
+                    if settings_changed {
+                        self.state.validate_settings();
+                    }
+                });
+                
+                ui.add_space(10.0);
+                
+                // Crop and Positioning
+                ui.collapsing("Crop and Positioning", |ui| {
+                    let mut settings_changed = false;
+                    let validation_errors = &self.state.ui_state.validation_errors;
+                    
+                    // Crop parameters (handle separately to avoid borrowing conflicts)
+                    let crop_changed = {
+                        let validation_errors = &self.state.ui_state.validation_errors;
+                        
+                        // Check for crop-related errors
+                        let has_crop_errors = validation_errors.keys().any(|k| k.starts_with("crop"));
+                        
+                        ui.horizontal(|ui| {
+                            if has_crop_errors {
+                                ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                            }
+                            ui.label("Crop:");
+                            
+                            let crop_enabled = self.state.settings.crop.is_some();
+                            let mut enable_crop = crop_enabled;
+                            
+                            if ui.checkbox(&mut enable_crop, "Enable").changed() {
+                                if enable_crop && !crop_enabled {
+                                    // Enable crop with default values
+                                    self.state.settings.crop = Some("50%:50%:25%:25%".to_string());
+                                    true
+                                } else if !enable_crop && crop_enabled {
+                                    // Disable crop
+                                    self.state.settings.crop = None;
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        }).inner
+                    };
+                    
+                    if crop_changed {
+                        settings_changed = true;
+                    }
+                    
+                    // Show crop validation errors
+                    for (key, error) in validation_errors {
+                        if key == "crop" {
+                            ui.indent("crop_error", |ui| {
+                                ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                            });
+                        }
+                    }
+                    
+                    // Show crop input fields if enabled
+                    if let Some(crop_str) = &mut self.state.settings.crop {
+                        ui.indent("crop_controls", |ui| {
+                            // Parse current crop values
+                            let parts: Vec<&str> = crop_str.split(':').collect();
+                            if parts.len() == 4 {
+                                let mut width_str = parts[0].to_string();
+                                let mut height_str = parts[1].to_string();
+                                let mut x_str = parts[2].to_string();
+                                let mut y_str = parts[3].to_string();
+                                
+                                ui.horizontal(|ui| {
+                                    // Check for individual crop parameter errors
+                                    if validation_errors.contains_key("crop_0") {
+                                        ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                                    }
+                                    ui.label("Width:");
+                                    if ui.text_edit_singleline(&mut width_str).changed() {
+                                        settings_changed = true;
+                                    }
+                                    
+                                    if validation_errors.contains_key("crop_1") {
+                                        ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                                    }
+                                    ui.label("Height:");
+                                    if ui.text_edit_singleline(&mut height_str).changed() {
+                                        settings_changed = true;
+                                    }
+                                });
+                                
+                                ui.horizontal(|ui| {
+                                    if validation_errors.contains_key("crop_2") {
+                                        ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                                    }
+                                    ui.label("X offset:");
+                                    if ui.text_edit_singleline(&mut x_str).changed() {
+                                        settings_changed = true;
+                                    }
+                                    
+                                    if validation_errors.contains_key("crop_3") {
+                                        ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                                    }
+                                    ui.label("Y offset:");
+                                    if ui.text_edit_singleline(&mut y_str).changed() {
+                                        settings_changed = true;
+                                    }
+                                });
+                                
+                                // Show individual crop parameter errors
+                                for i in 0..4 {
+                                    if let Some(error) = validation_errors.get(&format!("crop_{}", i)) {
+                                        ui.indent("crop_param_error", |ui| {
+                                            ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                                        });
+                                    }
+                                }
+                                
+                                if settings_changed {
+                                    *crop_str = format!("{}:{}:{}:{}", width_str, height_str, x_str, y_str);
+                                }
+                                
+                                ui.label("Format: width:height:x:y (use % for percentages)");
+                                ui.label("Example: 1920:1080:100:50 or 80%:60%:10%:20%");
+                            }
+                        });
+                    }
+                    
+                    ui.add_space(5.0);
+                    
+                    // Offset X
+                    if Self::show_array_input(ui, "Offset X", &mut self.state.settings.offset_x, -1000.0, 1000.0, "px", validation_errors) {
+                        settings_changed = true;
+                    }
+                    ui.add_space(5.0);
+                    
+                    // Offset Y
+                    if Self::show_array_input(ui, "Offset Y", &mut self.state.settings.offset_y, -1000.0, 1000.0, "px", validation_errors) {
+                        settings_changed = true;
+                    }
+                    
+                    if settings_changed {
+                        self.state.validate_settings();
+                    }
+                });
+                
+                ui.add_space(10.0);
+                
+                // Output Settings
+                ui.collapsing("Output Settings", |ui| {
+                    let validation_errors = &self.state.ui_state.validation_errors;
+                    let mut settings_changed = false;
+                    
+                    // Format selection
+                    ui.horizontal(|ui| {
+                        if validation_errors.contains_key("format") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("Format:");
+                        egui::ComboBox::from_id_source("format_combo")
+                            .selected_text(&self.state.settings.format)
+                            .show_ui(ui, |ui| {
+                                let formats = ["mp4", "mov", "avi", "jpg", "png", "tiff"];
+                                for format in formats {
+                                    if ui.selectable_value(&mut self.state.settings.format, format.to_string(), format).changed() {
+                                        settings_changed = true;
+                                    }
+                                }
+                            });
+                    });
+                    
+                    // Show format validation errors
+                    for (key, error) in validation_errors {
+                        if key == "format" || key.contains("format_") {
+                            ui.indent("format_error", |ui| {
+                                ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                            });
+                        }
+                    }
+                    ui.add_space(5.0);
+                    
+                    // FPS
+                    ui.horizontal(|ui| {
+                        if validation_errors.contains_key("fps") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("FPS:");
+                        let response = ui.add(
+                            egui::Slider::new(&mut self.state.settings.fps, 1..=120)
+                                .step_by(1.0)
+                        );
+                        if response.changed() {
+                            settings_changed = true;
+                        }
+                    });
+                    
+                    if let Some(error) = validation_errors.get("fps") {
+                        ui.indent("fps_error", |ui| {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                        });
+                    }
+                    ui.add_space(5.0);
+                    
+                    // Quality (CRF)
+                    ui.horizontal(|ui| {
+                        if validation_errors.contains_key("quality") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("Quality (CRF):");
+                        let response = ui.add(
+                            egui::Slider::new(&mut self.state.settings.quality, 0..=51)
+                                .step_by(1.0)
+                        );
+                        if response.changed() {
+                            settings_changed = true;
+                        }
+                        ui.label("(lower = better)");
+                    });
+                    
+                    if let Some(error) = validation_errors.get("quality") {
+                        ui.indent("quality_error", |ui| {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                        });
+                    }
+                    ui.add_space(5.0);
+                    
+                    // Resolution
+                    ui.horizontal(|ui| {
+                        if validation_errors.contains_key("resolution") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("Resolution:");
+                        let mut resolution_str = self.state.settings.resolution.clone().unwrap_or_default();
+                        if ui.text_edit_singleline(&mut resolution_str).changed() {
+                            self.state.settings.resolution = if resolution_str.is_empty() {
+                                None
+                            } else {
+                                Some(resolution_str)
+                            };
+                            settings_changed = true;
+                        }
+                    });
+                    
+                    if let Some(error) = validation_errors.get("resolution") {
+                        ui.indent("resolution_error", |ui| {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                        });
+                    }
+                    ui.label("Examples: 1920x1080, 4K, HD, or leave empty for original");
+                    
+                    if settings_changed {
+                        self.state.validate_settings();
+                    }
+                });
+                
+                ui.add_space(10.0);
+                
+                // Processing Settings
+                ui.collapsing("Processing Settings", |ui| {
+                    let validation_errors = &self.state.ui_state.validation_errors;
+                    let mut settings_changed = false;
+                    
+                    // Threads
+                    ui.horizontal(|ui| {
+                        if validation_errors.contains_key("threads") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("Threads:");
+                        let response = ui.add(
+                            egui::Slider::new(&mut self.state.settings.threads, 0..=32)
+                                .step_by(1.0)
+                        );
+                        if response.changed() {
+                            settings_changed = true;
+                        }
+                        ui.label("(0 = auto)");
+                    });
+                    
+                    if let Some(error) = validation_errors.get("threads") {
+                        ui.indent("threads_error", |ui| {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                        });
+                    }
+                    ui.add_space(5.0);
+                    
+                    // Frame Range
+                    ui.horizontal(|ui| {
+                        if validation_errors.contains_key("frame_range") {
+                            ui.colored_label(ui.visuals().error_fg_color, "⚠");
+                        }
+                        ui.label("Start Frame:");
+                        let mut start_frame = self.state.settings.start_frame.unwrap_or(0);
+                        if ui.add(egui::DragValue::new(&mut start_frame).range(0..=9999)).changed() {
+                            self.state.settings.start_frame = if start_frame == 0 { None } else { Some(start_frame) };
+                            settings_changed = true;
+                        }
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("End Frame:");
+                        let mut end_frame = self.state.settings.end_frame.unwrap_or(0);
+                        if ui.add(egui::DragValue::new(&mut end_frame).range(0..=9999)).changed() {
+                            self.state.settings.end_frame = if end_frame == 0 { None } else { Some(end_frame) };
+                            settings_changed = true;
+                        }
+                    });
+                    
+                    if let Some(error) = validation_errors.get("frame_range") {
+                        ui.indent("frame_range_error", |ui| {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                        });
+                    }
+                    ui.label("(0 = use default)");
+                    
+                    if settings_changed {
+                        self.state.validate_settings();
+                    }
+                });
+                
+                ui.add_space(10.0);
+                
+                // Settings Management
+                ui.collapsing("Settings Management", |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("💾 Save Settings").clicked() {
+                            // TODO: Implement settings save
+                        }
+                        if ui.button("📁 Load Settings").clicked() {
+                            // TODO: Implement settings load
+                        }
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("↺ Reset to Defaults").clicked() {
+                            self.state.settings = LapsifySettings::default();
+                            self.state.validate_settings();
+                        }
+                    });
+                });
+                
+                ui.add_space(10.0);
+                
+                // Validation Summary
+                if !self.state.ui_state.validation_errors.is_empty() {
+                    ui.add_space(10.0);
+                    
+                    // Count different types of errors
+                    let mut error_count = 0;
+                    let mut warning_count = 0;
+                    
+                    for (key, _) in &self.state.ui_state.validation_errors {
+                        if key.contains("array_length") || key.contains("format_") {
+                            warning_count += 1;
+                        } else {
+                            error_count += 1;
+                        }
+                    }
+                    
+                    let total_issues = error_count + warning_count;
+                    let header_text = if error_count > 0 {
+                        format!("⚠ {} Validation Issues ({} errors, {} warnings)", total_issues, error_count, warning_count)
+                    } else {
+                        format!("⚠ {} Validation Warnings", warning_count)
+                    };
+                    
+                    ui.collapsing(header_text, |ui| {
+                        // Group errors by category
+                        let mut parameter_errors = Vec::new();
+                        let mut format_warnings = Vec::new();
+                        let mut array_warnings = Vec::new();
+                        let mut other_errors = Vec::new();
+                        
+                        for (field, error) in &self.state.ui_state.validation_errors {
+                            if field.contains("array_length") {
+                                array_warnings.push((field, error));
+                            } else if field.contains("format_") {
+                                format_warnings.push((field, error));
+                            } else if field.contains("[") || field.contains("crop_") {
+                                parameter_errors.push((field, error));
+                            } else {
+                                other_errors.push((field, error));
+                            }
+                        }
+                        
+                        // Display parameter errors
+                        if !parameter_errors.is_empty() {
+                            ui.label("Parameter Range Errors:");
+                            ui.indent("param_errors", |ui| {
+                                for (_field, error) in parameter_errors {
+                                    ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                                }
+                            });
+                            ui.add_space(5.0);
+                        }
+                        
+                        // Display other errors
+                        if !other_errors.is_empty() {
+                            ui.label("Configuration Errors:");
+                            ui.indent("other_errors", |ui| {
+                                for (_field, error) in other_errors {
+                                    ui.colored_label(ui.visuals().error_fg_color, format!("• {}", error));
+                                }
+                            });
+                            ui.add_space(5.0);
+                        }
+                        
+                        // Display format warnings
+                        if !format_warnings.is_empty() {
+                            ui.label("Format Compatibility Warnings:");
+                            ui.indent("format_warnings", |ui| {
+                                for (_field, error) in format_warnings {
+                                    ui.colored_label(ui.visuals().warn_fg_color, format!("• {}", error));
+                                }
+                            });
+                            ui.add_space(5.0);
+                        }
+                        
+                        // Display array length warnings
+                        if !array_warnings.is_empty() {
+                            ui.label("Animation Array Warnings:");
+                            ui.indent("array_warnings", |ui| {
+                                for (_field, error) in array_warnings {
+                                    ui.colored_label(ui.visuals().warn_fg_color, format!("• {}", error));
+                                }
+                            });
+                        }
+                        
+                        ui.add_space(5.0);
+                        ui.separator();
+                        ui.label("💡 Tip: Fix errors before processing. Warnings are informational.");
+                    });
                 }
-                if ui.button("Clear Data").clicked() {
-                    self.state.images.clear();
-                    self.state.selected_image_index = None;
-                    self.state.selected_folder = None;
-                    self.state.ui_state.folder_error = None;
-                }
+                
+                // Development Tools (collapsible)
+                ui.collapsing("Development Tools", |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Load Test Data").clicked() {
+                            self.init_test_data();
+                        }
+                        if ui.button("Clear Data").clicked() {
+                            self.state.images.clear();
+                            self.state.selected_image_index = None;
+                            self.state.selected_folder = None;
+                            self.state.ui_state.folder_error = None;
+                        }
+                    });
+                    
+                    // Show thumbnail cache statistics
+                    ui.separator();
+                    let cache = &self.state.ui_state.thumbnail_cache;
+                    ui.label(format!("Cache: {}/{} thumbnails", 
+                        cache.entries.len(), cache.max_entries));
+                    ui.label(format!("Memory: {:.1}/{} MB", 
+                        cache.memory_usage_mb(), cache.max_memory_mb));
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("Load Visible Thumbnails").clicked() {
+                            self.load_visible_thumbnails(ui.ctx());
+                        }
+                        if ui.button("Clear Cache").clicked() {
+                            self.state.ui_state.thumbnail_cache.clear();
+                            for image in &mut self.state.images {
+                                image.thumbnail = None;
+                            }
+                        }
+                    });
+                });
             });
-        });
-        ui.separator();
-        
-        // Placeholder content for settings panel
-        ui.label("Lapsify Parameters");
-        ui.separator();
-        
-        ui.collapsing("Image Adjustments", |ui| {
-            ui.label("• Exposure");
-            ui.label("• Brightness");
-            ui.label("• Contrast");
-            ui.label("• Saturation");
-        });
-        
-        ui.collapsing("Output Settings", |ui| {
-            ui.label("• Format");
-            ui.label("• FPS");
-            ui.label("• Quality");
-            ui.label("• Resolution");
-        });
-        
-        ui.collapsing("Processing", |ui| {
-            ui.label("• Threads");
-            ui.label("• Frame Range");
-            ui.label("• Crop Settings");
-        });
-        
-        ui.separator();
-        ui.label(format!("Panel width: {:.0}px", ui.available_width()));
     }
     
     /// Display the thumbnail carousel panel

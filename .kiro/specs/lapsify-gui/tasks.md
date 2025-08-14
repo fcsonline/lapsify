@@ -72,7 +72,7 @@
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
 -
-  10. [ ] Build settings sidebar panel with input widgets
+  10. [x] Build settings sidebar panel with input widgets
   - Create input widgets for all lapsify parameters (exposure, brightness,
     contrast, saturation)
   - Implement array value input for animation parameters
@@ -82,7 +82,7 @@
   - _Requirements: 4.1, 4.2_
 
 -
-  11. [ ] Add settings validation and error display
+  11. [x] Add settings validation and error display
   - Implement real-time validation for all parameter ranges
   - Create visual error indicators for invalid inputs
   - Add validation messages matching lapsify CLI constraints
