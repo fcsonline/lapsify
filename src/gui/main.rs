@@ -218,6 +218,45 @@ impl AppState {
         }
     }
     
+    /// Load full-size image for viewing
+    pub fn load_full_image_sync(&mut self, image_index: usize, ctx: &egui::Context) -> bool {
+        if image_index >= self.images.len() {
+            return false;
+        }
+        
+        let image_path = self.images[image_index].path.clone();
+        
+        // Check if full image is already loaded
+        if self.images[image_index].full_image.is_some() {
+            return true;
+        }
+        
+        // Load full-size image
+        match load_full_image_async(&image_path) {
+            Ok(color_image) => {
+                // Create texture handle
+                let texture = ctx.load_texture(
+                    format!("full_image_{}", image_path.display()),
+                    color_image,
+                    egui::TextureOptions::LINEAR
+                );
+                
+                // Update image info
+                self.images[image_index].full_image = Some(texture);
+                
+                // Reset zoom and pan when loading new image
+                self.ui_state.zoom_level = 1.0;
+                self.ui_state.pan_offset = egui::Vec2::ZERO;
+                
+                true
+            }
+            Err(error) => {
+                println!("Failed to load full image for {}: {}", image_path.display(), error);
+                false
+            }
+        }
+    }
+    
     /// Add an image to the collection
     pub fn add_image(&mut self, image_info: ImageInfo) {
         self.images.push(image_info);
@@ -658,6 +697,11 @@ const THUMBNAIL_SIZE: f32 = 120.0;
 const THUMBNAIL_SPACING: f32 = 8.0;
 const CAROUSEL_PADDING: f32 = 10.0;
 
+// Image viewer constants
+const MIN_ZOOM: f32 = 0.1;
+const MAX_ZOOM: f32 = 10.0;
+const ZOOM_SPEED: f32 = 0.1;
+
 /// Load thumbnail asynchronously
 fn load_thumbnail_async(path: &PathBuf) -> Result<(egui::ColorImage, usize), String> {
     // Load the image
@@ -677,6 +721,30 @@ fn load_thumbnail_async(path: &PathBuf) -> Result<(egui::ColorImage, usize), Str
     );
     
     Ok((color_image, memory_size))
+}
+
+/// Load full-size image for main viewer
+fn load_full_image_async(path: &PathBuf) -> Result<egui::ColorImage, String> {
+    // Load the image
+    let img = image::open(path)
+        .map_err(|e| format!("Failed to open image: {}", e))?;
+    
+    // For very large images, we might want to limit the size to prevent memory issues
+    let (width, height) = img.dimensions();
+    let max_dimension = 2048; // Limit to 2048px on longest side
+    
+    let processed_img = if width > max_dimension || height > max_dimension {
+        // Resize large images to prevent memory issues
+        let scale = max_dimension as f32 / width.max(height) as f32;
+        let new_width = (width as f32 * scale) as u32;
+        let new_height = (height as f32 * scale) as u32;
+        img.resize(new_width, new_height, FilterType::Lanczos3)
+    } else {
+        img
+    };
+    
+    // Convert to egui ColorImage
+    Ok(dynamic_image_to_color_image(&processed_img))
 }
 
 struct LapsifyApp {
@@ -816,6 +884,27 @@ impl LapsifyApp {
         let end_index = std::cmp::min(end_index, self.state.images.len());
         
         self.state.ui_state.visible_thumbnail_range = (start_index, end_index);
+    }
+    
+    /// Handle zoom input
+    fn handle_zoom(&mut self, delta: f32) {
+        let new_zoom = (self.state.ui_state.zoom_level + delta * ZOOM_SPEED).clamp(MIN_ZOOM, MAX_ZOOM);
+        self.state.ui_state.zoom_level = new_zoom;
+    }
+    
+    /// Reset zoom and pan to default
+    fn reset_view(&mut self) {
+        self.state.ui_state.zoom_level = 1.0;
+        self.state.ui_state.pan_offset = egui::Vec2::ZERO;
+    }
+    
+    /// Calculate image display size maintaining aspect ratio
+    fn calculate_image_display_size(&self, image_size: egui::Vec2, available_size: egui::Vec2) -> egui::Vec2 {
+        let scale_x = available_size.x / image_size.x;
+        let scale_y = available_size.y / image_size.y;
+        let scale = scale_x.min(scale_y) * self.state.ui_state.zoom_level;
+        
+        egui::Vec2::new(image_size.x * scale, image_size.y * scale)
     }
 
     /// Display the settings sidebar panel
@@ -1211,60 +1300,236 @@ impl LapsifyApp {
             }
         }
         
-        // Main viewer area
-        let available_rect = ui.available_rect_before_wrap();
-        
-        if let Some(selected_image) = self.state.get_selected_image() {
-            // Display selected image info
-            ui.horizontal(|ui| {
-                ui.label("Selected:");
-                ui.label(selected_image.path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy());
-            });
+        // Image viewer controls and info
+        if let Some(selected_index) = self.state.selected_image_index {
+            // Collect UI actions to handle after borrowing
+            let mut zoom_in = false;
+            let mut zoom_out = false;
+            let mut reset_view = false;
+            let mut load_full_image = false;
             
-            ui.horizontal(|ui| {
-                ui.label(format!("Size: {}x{}", 
-                    selected_image.metadata.width, 
-                    selected_image.metadata.height));
-                ui.label(format!("Format: {}", selected_image.metadata.format));
-            });
+            if let Some(selected_image) = self.state.get_selected_image() {
+                // Image info and controls
+                ui.horizontal(|ui| {
+                    ui.label("Selected:");
+                    ui.label(selected_image.path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy());
+                    
+                    ui.separator();
+                    
+                    // Zoom controls
+                    ui.label(format!("Zoom: {:.1}%", self.state.ui_state.zoom_level * 100.0));
+                    if ui.button("🔍+").clicked() {
+                        zoom_in = true;
+                    }
+                    if ui.button("🔍-").clicked() {
+                        zoom_out = true;
+                    }
+                    if ui.button("↺ Reset").clicked() {
+                        reset_view = true;
+                    }
+                    
+                    ui.separator();
+                    
+                    // Load full image button
+                    if selected_image.full_image.is_none() {
+                        if ui.button("🖼 Load Full Image").clicked() {
+                            load_full_image = true;
+                        }
+                    } else {
+                        ui.colored_label(ui.visuals().selection.bg_fill, "✓ Full image loaded");
+                    }
+                });
+                
+                ui.horizontal(|ui| {
+                    ui.label(format!("Size: {}x{}", 
+                        selected_image.metadata.width, 
+                        selected_image.metadata.height));
+                    ui.label(format!("Format: {}", selected_image.metadata.format));
+                    ui.label(format!("File: {:.1} MB", 
+                        selected_image.metadata.file_size as f64 / 1_048_576.0));
+                });
+            }
             
-            // Placeholder for actual image display
-            let image_rect = egui::Rect::from_min_size(
-                available_rect.min + egui::vec2(10.0, 80.0),
-                available_rect.size() - egui::vec2(20.0, 90.0)
+            // Handle UI actions after borrowing
+            if zoom_in {
+                self.handle_zoom(1.0);
+            }
+            if zoom_out {
+                self.handle_zoom(-1.0);
+            }
+            if reset_view {
+                self.reset_view();
+            }
+            if load_full_image {
+                self.state.load_full_image_sync(selected_index, ui.ctx());
+            }
+                
+            // Main image display area
+            let available_rect = ui.available_rect_before_wrap();
+            let image_area = egui::Rect::from_min_size(
+                available_rect.min,
+                available_rect.size() - egui::vec2(0.0, 20.0) // Leave space for status
             );
             
-            ui.painter().rect_stroke(
-                image_rect,
-                5.0,
-                egui::Stroke::new(2.0, ui.visuals().text_color())
-            );
+            // Handle mouse wheel for zooming (collect scroll delta first)
+            let scroll_delta = ui.input(|i| i.raw_scroll_delta);
+            let should_zoom = scroll_delta.y != 0.0 && ui.rect_contains_pointer(image_area);
+            let zoom_delta = scroll_delta.y * 0.01;
             
-            ui.painter().text(
-                image_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Image will be displayed here",
-                egui::FontId::proportional(16.0),
-                ui.visuals().text_color()
-            );
+            // Get selected image info for display
+            if let Some(selected_image) = self.state.get_selected_image() {
+                // Create a scroll area for pan functionality
+                let _scroll_response = egui::ScrollArea::both()
+                    .id_source("image_viewer_scroll")
+                    .auto_shrink([false, false])
+                    .show_viewport(ui, |ui, _viewport| {
+                        // Display the image or placeholder
+                        if let Some(full_image_texture) = &selected_image.full_image {
+                            // Display full-size image
+                            let image_size = egui::Vec2::new(
+                                full_image_texture.size()[0] as f32,
+                                full_image_texture.size()[1] as f32
+                            );
+                            
+                            let display_size = self.calculate_image_display_size(image_size, image_area.size());
+                            
+                            // Center the image in the available space
+                            let image_pos = if display_size.x < image_area.width() && display_size.y < image_area.height() {
+                                // Image fits, center it
+                                egui::pos2(
+                                    (image_area.width() - display_size.x) * 0.5,
+                                    (image_area.height() - display_size.y) * 0.5
+                                )
+                            } else {
+                                // Image is larger, position at origin for scrolling
+                                egui::pos2(0.0, 0.0)
+                            };
+                            
+                            let image_rect = egui::Rect::from_min_size(image_pos, display_size);
+                            
+                            // Allocate space for the image
+                            ui.allocate_exact_size(display_size, egui::Sense::click_and_drag());
+                            
+                            // Draw the image
+                            ui.painter().image(
+                                full_image_texture.id(),
+                                image_rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE
+                            );
+                            
+                        } else if let Some(thumbnail_texture) = &selected_image.thumbnail {
+                            // Display thumbnail as placeholder
+                            let thumbnail_size = egui::Vec2::new(
+                                thumbnail_texture.size()[0] as f32,
+                                thumbnail_texture.size()[1] as f32
+                            );
+                            
+                            let display_size = self.calculate_image_display_size(thumbnail_size, image_area.size());
+                            
+                            // Center the thumbnail
+                            let image_pos = egui::pos2(
+                                (image_area.width() - display_size.x) * 0.5,
+                                (image_area.height() - display_size.y) * 0.5
+                            );
+                            
+                            let image_rect = egui::Rect::from_min_size(image_pos, display_size);
+                            
+                            // Allocate space
+                            ui.allocate_exact_size(image_area.size(), egui::Sense::click());
+                            
+                            // Draw thumbnail
+                            ui.painter().image(
+                                thumbnail_texture.id(),
+                                image_rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE
+                            );
+                            
+                            // Add "thumbnail" indicator
+                            ui.painter().text(
+                                image_rect.right_bottom() - egui::vec2(10.0, 10.0),
+                                egui::Align2::RIGHT_BOTTOM,
+                                "Thumbnail",
+                                egui::FontId::proportional(12.0),
+                                ui.visuals().text_color()
+                            );
+                            
+                        } else {
+                            // No image loaded - show placeholder
+                            ui.allocate_exact_size(image_area.size(), egui::Sense::click());
+                            
+                            let placeholder_rect = egui::Rect::from_center_size(
+                                image_area.center(),
+                                egui::vec2(200.0, 150.0)
+                            );
+                            
+                            ui.painter().rect_stroke(
+                                placeholder_rect,
+                                5.0,
+                                egui::Stroke::new(2.0, ui.visuals().text_color())
+                            );
+                            
+                            ui.painter().text(
+                                placeholder_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "Loading image...\nClick 'Load Full Image' above",
+                                egui::FontId::proportional(14.0),
+                                ui.visuals().text_color()
+                            );
+                        }
+                    });
+                
+                // Status bar (collect display info first)
+                let display_info = if let Some(full_image) = &selected_image.full_image {
+                    Some((full_image.size()[0] as f32, full_image.size()[1] as f32))
+                } else {
+                    None
+                };
+                
+                ui.horizontal(|ui| {
+                    ui.label(format!("Zoom: {:.1}%", self.state.ui_state.zoom_level * 100.0));
+                    if let Some((width, height)) = display_info {
+                        ui.label(format!("Display: {:.0}x{:.0}px", 
+                            width * self.state.ui_state.zoom_level,
+                            height * self.state.ui_state.zoom_level));
+                    }
+                    ui.label(format!("Viewer: {:.0}x{:.0}px", image_area.width(), image_area.height()));
+                });
+            } else {
+                // No image loaded - show placeholder
+                ui.centered_and_justified(|ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(50.0);
+                        ui.label("No image data available");
+                        ui.label("Try selecting a different image");
+                    });
+                });
+            }
             
+            // Handle zoom after image display (outside of selected_image scope)
+            if should_zoom {
+                self.handle_zoom(zoom_delta);
+            }
         } else {
-            // No image selected placeholder
+            // No image selected
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
+                    ui.add_space(50.0);
                     ui.label("No image selected");
-                    ui.label("Click on a thumbnail to view an image");
+                    ui.label("Click on a thumbnail in the carousel below to view an image");
+                    ui.add_space(20.0);
+                    
+                    // Show some helpful info
+                    if !self.state.images.is_empty() {
+                        ui.label(format!("📁 {} images available", self.state.images.len()));
+                        ui.label("Use the carousel below to browse images");
+                    }
                 });
             });
         }
-        
-        // Display panel dimensions for debugging
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::RIGHT), |ui| {
-            ui.label(format!("Viewer size: {:.0}x{:.0}px", 
-                available_rect.width(), available_rect.height()));
-        });
     }
 }
 

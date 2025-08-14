@@ -64,7 +64,7 @@
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
 -
-  9. [ ] Implement main image viewer panel
+  9. [x] Implement main image viewer panel
   - Create full-size image display in main pane
   - Add image scaling to fit pane while maintaining aspect ratio
   - Implement zoom and pan functionality for large images
