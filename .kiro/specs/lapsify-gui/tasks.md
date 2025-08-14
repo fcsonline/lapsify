@@ -8,7 +8,14 @@
   - _Requirements: 6.1, 6.2_
 
 -
-  2. [ ] Implement core data structures and state management
+  2. [x] Create basic eframe application structure
+  - Implement eframe::App trait for main application
+  - Set up basic window with title and sizing
+  - Create placeholder content showing application purpose
+  - _Requirements: 6.1, 6.2_
+
+-
+  3. [x] Implement core data structures and state management
   - Create AppState struct with all application state fields
   - Implement ImageInfo struct for image metadata and texture handles
   - Create LapsifySettings struct mirroring CLI parameters from main.rs
@@ -16,15 +23,16 @@
   - _Requirements: 4.1, 4.4, 4.5_
 
 -
-  3. [ ] Create basic eframe application structure
-  - Implement eframe::App trait for main application
-  - Set up three-pane layout with egui panels (sidebar, main, bottom)
-  - Create placeholder content for each pane
-  - Implement window sizing and basic responsiveness
+  4. [x] Set up three-pane layout with egui panels
+  - Replace CentralPanel with SidePanel, CentralPanel, and TopBottomPanel
+  - Create sidebar for settings (left pane)
+  - Create main viewer area (center pane)
+  - Create bottom carousel panel for thumbnails
+  - Implement basic pane resizing and proportions
   - _Requirements: 6.1, 6.2, 6.3_
 
 -
-  4. [ ] Implement folder selection functionality
+  5. [x] Implement folder selection functionality
   - Add file dialog integration using rfd crate
   - Create folder selection button in UI
   - Implement folder path validation and display
@@ -32,7 +40,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
 -
-  5. [ ] Create image scanning and loading system
+  6. [x] Create image scanning and loading system
   - Implement directory scanning for supported image formats
   - Create image file filtering based on lapsify supported formats
   - Add chronological sorting of image files
@@ -40,7 +48,7 @@
   - _Requirements: 1.2, 7.1, 7.2, 7.3_
 
 -
-  6. [ ] Build thumbnail generation and caching system
+  7. [ ] Build thumbnail generation and caching system
   - Implement thumbnail generation with size constraints (200x200)
   - Create LRU cache for thumbnail storage
   - Add async thumbnail loading with loading indicators
@@ -48,7 +56,7 @@
   - _Requirements: 2.1, 2.5_
 
 -
-  7. [ ] Create carousel panel with thumbnail display
+  8. [ ] Create carousel panel with thumbnail display
   - Implement horizontal scrollable thumbnail strip in bottom pane
   - Add thumbnail click handling for selection
   - Create visual selection highlighting for active thumbnail
@@ -56,7 +64,7 @@
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
 -
-  8. [ ] Implement main image viewer panel
+  9. [ ] Implement main image viewer panel
   - Create full-size image display in main pane
   - Add image scaling to fit pane while maintaining aspect ratio
   - Implement zoom and pan functionality for large images
@@ -64,16 +72,17 @@
   - _Requirements: 3.1, 3.2, 3.3, 3.4_
 
 -
-  9. [ ] Build settings sidebar panel
+  10. [ ] Build settings sidebar panel with input widgets
   - Create input widgets for all lapsify parameters (exposure, brightness,
     contrast, saturation)
   - Implement array value input for animation parameters
   - Add crop parameter input with validation
   - Create output format, fps, quality, and resolution controls
+  - Replace placeholder settings panel with functional controls
   - _Requirements: 4.1, 4.2_
 
 -
-  10. [ ] Add settings validation and error display
+  11. [ ] Add settings validation and error display
   - Implement real-time validation for all parameter ranges
   - Create visual error indicators for invalid inputs
   - Add validation messages matching lapsify CLI constraints
@@ -81,7 +90,7 @@
   - _Requirements: 4.2, 4.3_
 
 -
-  11. [ ] Create CLI integration system
+  12. [ ] Create CLI integration system
   - Implement command generation from settings struct
   - Add process execution for lapsify CLI with parameter passing
   - Create output directory selection for processed results
@@ -89,7 +98,7 @@
   - _Requirements: 5.1, 5.4_
 
 -
-  12. [ ] Build progress tracking and cancellation
+  13. [ ] Build progress tracking and cancellation
   - Implement progress indicator UI for time-lapse generation
   - Add cancellation button and process termination handling
   - Create progress updates from CLI execution monitoring
@@ -97,7 +106,7 @@
   - _Requirements: 5.2, 5.3, 5.4_
 
 -
-  13. [ ] Add responsive layout and window management
+  14. [ ] Add responsive layout and window management
   - Implement pane resizing with minimum size constraints
   - Add window size persistence between sessions
   - Create responsive behavior for different screen sizes
@@ -105,7 +114,7 @@
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
 -
-  14. [ ] Implement settings persistence and presets
+  15. [ ] Implement settings persistence and presets
   - Add save/load functionality for settings to JSON files
   - Create settings presets for common configurations
   - Implement session state persistence for current folder and settings
@@ -113,7 +122,7 @@
   - _Requirements: 4.4, 4.5_
 
 -
-  15. [ ] Add comprehensive error handling
+  16. [ ] Add comprehensive error handling
   - Implement error display system with non-blocking notifications
   - Create modal dialogs for critical errors requiring user action
   - Add file system error handling with user-friendly messages
@@ -121,7 +130,7 @@
   - _Requirements: 1.3, 7.4_
 
 -
-  16. [ ] Create keyboard navigation and accessibility
+  17. [ ] Create keyboard navigation and accessibility
   - Add keyboard shortcuts for common actions (folder selection, image
     navigation)
   - Implement tab navigation through UI elements
@@ -130,7 +139,7 @@
   - _Requirements: 6.1_
 
 -
-  17. [ ] Implement performance optimizations
+  18. [ ] Implement performance optimizations
   - Add background loading for full-resolution images
   - Implement texture cleanup and memory management
   - Create efficient thumbnail loading with viewport culling
@@ -138,7 +147,7 @@
   - _Requirements: 2.5, 3.4_
 
 -
-  18. [ ] Add final integration and testing
+  19. [ ] Add final integration and testing
   - Create end-to-end workflow testing from folder selection to video generation
   - Implement error scenario testing with various edge cases
   - Add performance testing with large image collections
