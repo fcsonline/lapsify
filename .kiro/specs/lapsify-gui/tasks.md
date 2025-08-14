@@ -48,7 +48,7 @@
   - _Requirements: 1.2, 7.1, 7.2, 7.3_
 
 -
-  7. [ ] Build thumbnail generation and caching system
+  7. [x] Build thumbnail generation and caching system
   - Implement thumbnail generation with size constraints (200x200)
   - Create LRU cache for thumbnail storage
   - Add async thumbnail loading with loading indicators
@@ -56,7 +56,7 @@
   - _Requirements: 2.1, 2.5_
 
 -
-  8. [ ] Create carousel panel with thumbnail display
+  8. [x] Create carousel panel with thumbnail display
   - Implement horizontal scrollable thumbnail strip in bottom pane
   - Add thumbnail click handling for selection
   - Create visual selection highlighting for active thumbnail

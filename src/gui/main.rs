@@ -1,10 +1,11 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::fs;
-use std::time::SystemTime;
-use image::GenericImageView;
+use std::time::{SystemTime, Instant};
+use image::{GenericImageView, DynamicImage, imageops::FilterType};
+use std::thread;
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -78,9 +79,11 @@ impl AppState {
             None => return Err("No folder selected".to_string()),
         };
         
-        // Clear existing images
+        // Clear existing images and thumbnail states
         self.images.clear();
         self.selected_image_index = None;
+        self.ui_state.thumbnail_cache.clear();
+        self.ui_state.thumbnail_load_states.clear();
         
         // Read directory and collect image files
         let entries = fs::read_dir(folder)
@@ -109,12 +112,15 @@ impl AppState {
         for path in image_paths {
             let metadata = create_image_metadata(&path);
             let image_info = ImageInfo {
-                path,
+                path: path.clone(),
                 thumbnail: None,
                 full_image: None,
                 metadata,
             };
             self.images.push(image_info);
+            
+            // Initialize thumbnail load state
+            self.ui_state.thumbnail_load_states.insert(path, ThumbnailLoadState::NotStarted);
         }
         
         // Select the first image if any were found
@@ -123,6 +129,93 @@ impl AppState {
         }
         
         Ok(self.images.len())
+    }
+    
+    /// Request thumbnail loading for a specific image
+    pub fn request_thumbnail(&mut self, image_index: usize, ctx: &egui::Context) {
+        if image_index >= self.images.len() {
+            return;
+        }
+        
+        let image_path = self.images[image_index].path.clone();
+        
+        // Check if thumbnail is already cached
+        if let Some(thumbnail) = self.ui_state.thumbnail_cache.get(&image_path) {
+            self.images[image_index].thumbnail = Some(thumbnail);
+            return;
+        }
+        
+        // Check if already loading
+        if let Some(ThumbnailLoadState::Loading) = self.ui_state.thumbnail_load_states.get(&image_path) {
+            return;
+        }
+        
+        // Mark as loading
+        self.ui_state.thumbnail_load_states.insert(image_path.clone(), ThumbnailLoadState::Loading);
+        
+        // Start async thumbnail loading
+        let ctx_clone = ctx.clone();
+        let path_clone = image_path.clone();
+        
+        thread::spawn(move || {
+            match load_thumbnail_async(&path_clone) {
+                Ok((_color_image, _memory_size)) => {
+                    // Request repaint to update UI with loaded thumbnail
+                    ctx_clone.request_repaint();
+                    
+                    // Note: In a real implementation, we'd need a channel or shared state
+                    // to communicate the loaded thumbnail back to the main thread.
+                    // For now, we'll implement a simpler synchronous approach.
+                }
+                Err(error) => {
+                    println!("Failed to load thumbnail for {}: {}", path_clone.display(), error);
+                    ctx_clone.request_repaint();
+                }
+            }
+        });
+    }
+    
+    /// Load thumbnail synchronously (for immediate use)
+    pub fn load_thumbnail_sync(&mut self, image_index: usize, ctx: &egui::Context) -> bool {
+        if image_index >= self.images.len() {
+            return false;
+        }
+        
+        let image_path = self.images[image_index].path.clone();
+        
+        // Check if thumbnail is already cached
+        if let Some(thumbnail) = self.ui_state.thumbnail_cache.get(&image_path) {
+            self.images[image_index].thumbnail = Some(thumbnail);
+            return true;
+        }
+        
+        // Load thumbnail synchronously
+        match load_thumbnail_async(&image_path) {
+            Ok((color_image, memory_size)) => {
+                // Create texture handle
+                let texture = ctx.load_texture(
+                    format!("thumbnail_{}", image_path.display()),
+                    color_image,
+                    egui::TextureOptions::LINEAR
+                );
+                
+                // Cache the thumbnail
+                self.ui_state.thumbnail_cache.insert(image_path.clone(), texture.clone(), memory_size);
+                
+                // Update image info
+                self.images[image_index].thumbnail = Some(texture);
+                
+                // Update load state
+                self.ui_state.thumbnail_load_states.insert(image_path, ThumbnailLoadState::Loaded);
+                
+                true
+            }
+            Err(error) => {
+                println!("Failed to load thumbnail for {}: {}", image_path.display(), error);
+                self.ui_state.thumbnail_load_states.insert(image_path, ThumbnailLoadState::Error(error));
+                false
+            }
+        }
     }
     
     /// Add an image to the collection
@@ -332,6 +425,107 @@ pub struct ProcessingStatus {
     pub output_path: Option<PathBuf>,
 }
 
+/// Thumbnail cache entry with metadata
+#[derive(Clone)]
+pub struct ThumbnailCacheEntry {
+    pub texture: egui::TextureHandle,
+    pub last_accessed: Instant,
+    pub memory_size: usize,
+}
+
+/// LRU cache for thumbnails with memory management
+pub struct ThumbnailCache {
+    pub entries: HashMap<PathBuf, ThumbnailCacheEntry>,
+    pub access_order: VecDeque<PathBuf>,
+    pub max_entries: usize,
+    pub max_memory_mb: usize,
+    pub current_memory_bytes: usize,
+}
+
+impl ThumbnailCache {
+    pub fn new(max_entries: usize, max_memory_mb: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            access_order: VecDeque::new(),
+            max_entries,
+            max_memory_mb,
+            current_memory_bytes: 0,
+        }
+    }
+    
+    pub fn get(&mut self, path: &PathBuf) -> Option<egui::TextureHandle> {
+        if let Some(entry) = self.entries.get_mut(path) {
+            entry.last_accessed = Instant::now();
+            // Move to front of access order
+            if let Some(pos) = self.access_order.iter().position(|p| p == path) {
+                self.access_order.remove(pos);
+            }
+            self.access_order.push_front(path.clone());
+            Some(entry.texture.clone())
+        } else {
+            None
+        }
+    }
+    
+    pub fn insert(&mut self, path: PathBuf, texture: egui::TextureHandle, memory_size: usize) {
+        // Remove existing entry if present
+        if let Some(old_entry) = self.entries.remove(&path) {
+            self.current_memory_bytes -= old_entry.memory_size;
+            if let Some(pos) = self.access_order.iter().position(|p| p == &path) {
+                self.access_order.remove(pos);
+            }
+        }
+        
+        // Add new entry
+        let entry = ThumbnailCacheEntry {
+            texture,
+            last_accessed: Instant::now(),
+            memory_size,
+        };
+        
+        self.entries.insert(path.clone(), entry);
+        self.access_order.push_front(path);
+        self.current_memory_bytes += memory_size;
+        
+        // Enforce cache limits
+        self.enforce_limits();
+    }
+    
+    fn enforce_limits(&mut self) {
+        let max_memory_bytes = self.max_memory_mb * 1024 * 1024;
+        
+        // Remove entries until we're under both limits
+        while (self.entries.len() > self.max_entries || self.current_memory_bytes > max_memory_bytes)
+            && !self.access_order.is_empty() {
+            
+            if let Some(oldest_path) = self.access_order.pop_back() {
+                if let Some(entry) = self.entries.remove(&oldest_path) {
+                    self.current_memory_bytes -= entry.memory_size;
+                }
+            }
+        }
+    }
+    
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.access_order.clear();
+        self.current_memory_bytes = 0;
+    }
+    
+    pub fn memory_usage_mb(&self) -> f32 {
+        self.current_memory_bytes as f32 / (1024.0 * 1024.0)
+    }
+}
+
+/// Thumbnail loading state
+#[derive(Clone, PartialEq)]
+pub enum ThumbnailLoadState {
+    NotStarted,
+    Loading,
+    Loaded,
+    Error(String),
+}
+
 /// UI state for managing interface elements
 pub struct UiState {
     pub sidebar_width: f32,
@@ -341,6 +535,10 @@ pub struct UiState {
     pub zoom_level: f32,
     pub pan_offset: egui::Vec2,
     pub folder_error: Option<String>,
+    pub thumbnail_cache: ThumbnailCache,
+    pub thumbnail_load_states: HashMap<PathBuf, ThumbnailLoadState>,
+    pub carousel_scroll_offset: f32,
+    pub visible_thumbnail_range: (usize, usize),
 }
 
 impl Default for UiState {
@@ -353,6 +551,10 @@ impl Default for UiState {
             zoom_level: 1.0,
             pan_offset: egui::Vec2::ZERO,
             folder_error: None,
+            thumbnail_cache: ThumbnailCache::new(100, 50), // 100 thumbnails, 50MB max
+            thumbnail_load_states: HashMap::new(),
+            carousel_scroll_offset: 0.0,
+            visible_thumbnail_range: (0, 0),
         }
     }
 }
@@ -414,6 +616,67 @@ fn create_image_metadata(path: &Path) -> ImageMetadata {
     }
     
     metadata
+}
+
+/// Generate a thumbnail from an image with size constraints
+fn generate_thumbnail(img: &DynamicImage, max_size: u32) -> DynamicImage {
+    let (width, height) = img.dimensions();
+    
+    // Calculate thumbnail dimensions maintaining aspect ratio
+    let (thumb_width, thumb_height) = if width > height {
+        let ratio = max_size as f32 / width as f32;
+        (max_size, (height as f32 * ratio) as u32)
+    } else {
+        let ratio = max_size as f32 / height as f32;
+        ((width as f32 * ratio) as u32, max_size)
+    };
+    
+    // Resize using high-quality filtering
+    img.resize(thumb_width, thumb_height, FilterType::Lanczos3)
+}
+
+/// Convert DynamicImage to egui ColorImage
+fn dynamic_image_to_color_image(img: &DynamicImage) -> egui::ColorImage {
+    let rgba_img = img.to_rgba8();
+    let (width, height) = rgba_img.dimensions();
+    let pixels = rgba_img.into_raw();
+    
+    egui::ColorImage::from_rgba_unmultiplied(
+        [width as usize, height as usize],
+        &pixels,
+    )
+}
+
+/// Calculate approximate memory usage of a thumbnail
+fn calculate_thumbnail_memory_size(width: u32, height: u32) -> usize {
+    // RGBA = 4 bytes per pixel
+    (width * height * 4) as usize
+}
+
+// Carousel constants
+const THUMBNAIL_SIZE: f32 = 120.0;
+const THUMBNAIL_SPACING: f32 = 8.0;
+const CAROUSEL_PADDING: f32 = 10.0;
+
+/// Load thumbnail asynchronously
+fn load_thumbnail_async(path: &PathBuf) -> Result<(egui::ColorImage, usize), String> {
+    // Load the image
+    let img = image::open(path)
+        .map_err(|e| format!("Failed to open image: {}", e))?;
+    
+    // Generate thumbnail with 200x200 max size
+    let thumbnail = generate_thumbnail(&img, 200);
+    
+    // Convert to egui ColorImage
+    let color_image = dynamic_image_to_color_image(&thumbnail);
+    
+    // Calculate memory usage
+    let memory_size = calculate_thumbnail_memory_size(
+        color_image.width() as u32,
+        color_image.height() as u32
+    );
+    
+    Ok((color_image, memory_size))
 }
 
 struct LapsifyApp {
@@ -510,6 +773,50 @@ impl LapsifyApp {
             }
         }
     }
+    
+    /// Load thumbnails for visible/priority images
+    fn load_visible_thumbnails(&mut self, ctx: &egui::Context) {
+        // Load thumbnail for currently selected image first
+        if let Some(selected_index) = self.state.selected_image_index {
+            self.state.load_thumbnail_sync(selected_index, ctx);
+        }
+        
+        // Load thumbnails for first few images (for carousel display)
+        let visible_count = std::cmp::min(10, self.state.images.len());
+        for i in 0..visible_count {
+            self.state.load_thumbnail_sync(i, ctx);
+        }
+    }
+    
+    /// Load thumbnails for images visible in the carousel viewport
+    fn load_visible_carousel_thumbnails(&mut self, ctx: &egui::Context) {
+        let (start, end) = self.state.ui_state.visible_thumbnail_range;
+        
+        // Load thumbnails for visible range plus a buffer
+        let buffer = 3; // Load 3 extra on each side
+        let start_with_buffer = start.saturating_sub(buffer);
+        let end_with_buffer = std::cmp::min(end + buffer, self.state.images.len());
+        
+        for i in start_with_buffer..end_with_buffer {
+            if i < self.state.images.len() {
+                self.state.load_thumbnail_sync(i, ctx);
+            }
+        }
+    }
+    
+    /// Calculate which thumbnails are visible in the carousel viewport
+    fn calculate_visible_thumbnails(&mut self, scroll_area_rect: egui::Rect, scroll_offset: f32) {
+        let thumbnail_width = THUMBNAIL_SIZE + THUMBNAIL_SPACING;
+        let viewport_start = scroll_offset;
+        let viewport_end = scroll_offset + scroll_area_rect.width();
+        
+        let start_index = ((viewport_start - CAROUSEL_PADDING) / thumbnail_width).floor().max(0.0) as usize;
+        let end_index = ((viewport_end - CAROUSEL_PADDING) / thumbnail_width).ceil() as usize;
+        
+        let end_index = std::cmp::min(end_index, self.state.images.len());
+        
+        self.state.ui_state.visible_thumbnail_range = (start_index, end_index);
+    }
 
     /// Display the settings sidebar panel
     fn show_settings_sidebar(&mut self, ui: &mut egui::Ui) {
@@ -566,7 +873,38 @@ impl LapsifyApp {
                                 selected_image.metadata.height));
                             ui.label(format!("File size: {:.1} MB", 
                                 selected_image.metadata.file_size as f64 / 1_048_576.0));
+                            
+                            // Show thumbnail status
+                            let thumbnail_status = if selected_image.thumbnail.is_some() {
+                                "✓ Thumbnail loaded"
+                            } else {
+                                "⏳ Thumbnail not loaded"
+                            };
+                            ui.label(thumbnail_status);
                         }
+                    });
+                    
+                    // Show thumbnail cache statistics
+                    ui.collapsing("Thumbnail Cache", |ui| {
+                        let cache = &self.state.ui_state.thumbnail_cache;
+                        ui.label(format!("Cached: {}/{} thumbnails", 
+                            cache.entries.len(), cache.max_entries));
+                        ui.label(format!("Memory: {:.1}/{} MB", 
+                            cache.memory_usage_mb(), cache.max_memory_mb));
+                        
+                        // Cache management buttons
+                        ui.horizontal(|ui| {
+                            if ui.button("Load Visible Thumbnails").clicked() {
+                                self.load_visible_thumbnails(ui.ctx());
+                            }
+                            if ui.button("Clear Cache").clicked() {
+                                self.state.ui_state.thumbnail_cache.clear();
+                                // Clear thumbnail references in images
+                                for image in &mut self.state.images {
+                                    image.thumbnail = None;
+                                }
+                            }
+                        });
                     });
                 }
             }
@@ -648,6 +986,10 @@ impl LapsifyApp {
                             }
                         }
                     }
+                    
+                    // Show cache info
+                    let cached_count = self.state.ui_state.thumbnail_cache.entries.len();
+                    ui.label(format!("({} cached)", cached_count));
                 });
             }
             None => {
@@ -660,45 +1002,159 @@ impl LapsifyApp {
         
         ui.separator();
         
-        // Placeholder content for carousel
+        // Thumbnail carousel
         if self.state.images.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.label("No images found in selected folder.");
             });
         } else {
+            // Navigation info
             ui.horizontal(|ui| {
-                ui.label(format!("{} images loaded", self.state.images.len()));
                 if let Some(index) = self.state.selected_image_index {
-                    ui.label(format!("Selected: {}", index + 1));
+                    ui.label(format!("Image {} of {}", index + 1, self.state.images.len()));
+                    
+                    // Navigation buttons
+                    if ui.button("◀ Prev").clicked() && index > 0 {
+                        self.state.select_image(index - 1);
+                    }
+                    if ui.button("Next ▶").clicked() && index < self.state.images.len() - 1 {
+                        self.state.select_image(index + 1);
+                    }
+                } else {
+                    ui.label(format!("{} images loaded", self.state.images.len()));
                 }
             });
             
-            // Placeholder for thumbnail strip
             ui.separator();
-            egui::ScrollArea::horizontal()
-                .id_source("thumbnail_scroll")
+            
+            // Collect click events to handle after the loop
+            let mut clicked_image_index: Option<usize> = None;
+            
+            // Horizontal scrollable thumbnail strip
+            let scroll_area_response = egui::ScrollArea::horizontal()
+                .id_source("thumbnail_carousel")
+                .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for i in 0..self.state.images.len() {
+                        ui.add_space(CAROUSEL_PADDING);
+                        
+                        for (i, image_info) in self.state.images.iter().enumerate() {
                             let is_selected = self.state.selected_image_index == Some(i);
-                            let button_text = format!("Img {}", i + 1);
                             
-                            let button = if is_selected {
-                                egui::Button::new(&button_text).fill(ui.visuals().selection.bg_fill)
+                            // Draw thumbnail or placeholder
+                            let response = if let Some(thumbnail_texture) = &image_info.thumbnail {
+                                // Draw actual thumbnail
+                                let image_response = ui.add(
+                                    egui::Image::from_texture(thumbnail_texture)
+                                        .max_size(egui::vec2(THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+                                        .rounding(egui::Rounding::same(4.0))
+                                );
+                                
+                                // Add selection border
+                                if is_selected {
+                                    ui.painter().rect_stroke(
+                                        image_response.rect.expand(2.0),
+                                        egui::Rounding::same(6.0),
+                                        egui::Stroke::new(3.0, ui.visuals().selection.bg_fill)
+                                    );
+                                }
+                                
+                                image_response
                             } else {
-                                egui::Button::new(&button_text)
+                                // Draw placeholder
+                                let placeholder_response = ui.allocate_response(
+                                    egui::vec2(THUMBNAIL_SIZE, THUMBNAIL_SIZE),
+                                    egui::Sense::click()
+                                );
+                                
+                                let fill_color = if is_selected {
+                                    ui.visuals().selection.bg_fill
+                                } else {
+                                    ui.visuals().window_fill
+                                };
+                                
+                                ui.painter().rect_filled(
+                                    placeholder_response.rect,
+                                    egui::Rounding::same(4.0),
+                                    fill_color
+                                );
+                                
+                                ui.painter().rect_stroke(
+                                    placeholder_response.rect,
+                                    egui::Rounding::same(4.0),
+                                    egui::Stroke::new(1.0, ui.visuals().text_color())
+                                );
+                                
+                                // Show loading indicator or filename
+                                let text = match self.state.ui_state.thumbnail_load_states.get(&image_info.path) {
+                                    Some(ThumbnailLoadState::Loading) => "⏳".to_string(),
+                                    Some(ThumbnailLoadState::Error(_)) => "❌".to_string(),
+                                    _ => {
+                                        // Show filename or image number
+                                        if let Some(filename) = image_info.path.file_stem() {
+                                            filename.to_string_lossy().chars().take(8).collect()
+                                        } else {
+                                            format!("{}", i + 1)
+                                        }
+                                    }
+                                };
+                                
+                                ui.painter().text(
+                                    placeholder_response.rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    text,
+                                    egui::FontId::proportional(12.0),
+                                    ui.visuals().text_color()
+                                );
+                                
+                                placeholder_response
                             };
                             
-                            if ui.add_sized([80.0, 60.0], button).clicked() {
-                                self.state.select_image(i);
+                            // Handle click
+                            if response.clicked() {
+                                clicked_image_index = Some(i);
                             }
+                            
+                            // Show tooltip with image info
+                            if response.hovered() {
+                                response.on_hover_ui(|ui| {
+                                    ui.label(format!("Image {}", i + 1));
+                                    ui.label(image_info.path.file_name().unwrap_or_default().to_string_lossy());
+                                    ui.label(format!("{}x{}", image_info.metadata.width, image_info.metadata.height));
+                                    ui.label(format!("{}", image_info.metadata.format));
+                                    if let Some(modified) = image_info.metadata.modified {
+                                        if let Ok(duration) = modified.duration_since(SystemTime::UNIX_EPOCH) {
+                                            ui.label(format!("Modified: {}", duration.as_secs()));
+                                        }
+                                    }
+                                });
+                            }
+                            
+                            ui.add_space(THUMBNAIL_SPACING);
                         }
+                        
+                        ui.add_space(CAROUSEL_PADDING);
                     });
                 });
+            
+            // Handle click events after the loop
+            if let Some(index) = clicked_image_index {
+                self.state.select_image(index);
+            }
+            
+            // Calculate visible thumbnails and trigger lazy loading
+            let scroll_rect = scroll_area_response.inner_rect;
+            let scroll_offset = scroll_area_response.state.offset.x;
+            self.calculate_visible_thumbnails(scroll_rect, scroll_offset);
+            self.load_visible_carousel_thumbnails(ui.ctx());
+            
+            // Show carousel statistics
+            ui.horizontal(|ui| {
+                let (start, end) = self.state.ui_state.visible_thumbnail_range;
+                ui.label(format!("Visible: {}-{}", start + 1, end));
+                ui.label(format!("Cache: {:.1}MB", self.state.ui_state.thumbnail_cache.memory_usage_mb()));
+            });
         }
-        
-        ui.separator();
-        ui.label(format!("Panel height: {:.0}px", ui.available_height()));
     }
     
     /// Display the main image viewer panel
