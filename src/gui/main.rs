@@ -108,7 +108,14 @@ impl AppState {
         
         // Read directory and collect image files
         let entries = fs::read_dir(folder)
-            .map_err(|e| format!("Failed to read directory: {}", e))?;
+            .map_err(|e| {
+                let error_msg = match e.kind() {
+                    std::io::ErrorKind::NotFound => format!("Directory not found: {}", folder.display()),
+                    std::io::ErrorKind::PermissionDenied => format!("Permission denied accessing directory: {}", folder.display()),
+                    _ => format!("Failed to read directory {}: {}", folder.display(), e),
+                };
+                error_msg
+            })?;
         
         let mut image_paths: Vec<PathBuf> = entries
             .filter_map(|entry| entry.ok())
@@ -287,6 +294,8 @@ impl AppState {
     pub fn select_image(&mut self, index: usize) {
         if index < self.images.len() {
             self.selected_image_index = Some(index);
+            // Queue background loading for nearby images
+            self.queue_background_loading();
         }
     }
     
@@ -327,6 +336,12 @@ impl AppState {
                 output_directory: self.ui_state.output_directory.clone(),
                 window_size: self.ui_state.window_size,
                 window_position: self.ui_state.window_position,
+                error_notifications: VecDeque::new(), // Don't persist notifications
+                modal_dialog: ModalDialog::default(), // Don't persist modal state
+                lapsify_cli_available: None, // Don't persist CLI check
+                show_help_dialog: false, // Don't persist help dialog state
+                background_load_queue: VecDeque::new(), // Don't persist load queue
+                last_frame_time: None, // Don't persist frame time
             },
         };
         
@@ -414,6 +429,167 @@ impl AppState {
             .map_err(|e| format!("Failed to write presets file: {}", e))?;
         
         Ok(())
+    }
+    
+    /// Add an error notification to the UI
+    pub fn add_error_notification(&mut self, message: String, error_type: ErrorType, auto_dismiss: bool) {
+        let notification = ErrorNotification {
+            message,
+            error_type,
+            timestamp: Instant::now(),
+            auto_dismiss,
+        };
+        
+        // Limit the number of notifications to prevent memory issues
+        if self.ui_state.error_notifications.len() >= 10 {
+            self.ui_state.error_notifications.pop_front();
+        }
+        
+        self.ui_state.error_notifications.push_back(notification);
+    }
+    
+    /// Show a modal dialog for critical errors
+    pub fn show_modal_error(&mut self, title: String, message: String) {
+        self.ui_state.modal_dialog = ModalDialog {
+            is_open: true,
+            title,
+            message,
+            dialog_type: DialogType::Error,
+        };
+    }
+    
+    /// Check if lapsify CLI is available and cache the result
+    pub fn check_lapsify_availability(&mut self) -> bool {
+        if let Some(available) = self.ui_state.lapsify_cli_available {
+            return available;
+        }
+        
+        let available = match find_lapsify_executable() {
+            Ok(_) => true,
+            Err(_) => false,
+        };
+        
+        self.ui_state.lapsify_cli_available = Some(available);
+        
+        if !available {
+            self.add_error_notification(
+                "Lapsify CLI not found. Please ensure lapsify is installed and available in PATH.".to_string(),
+                ErrorType::Critical,
+                false,
+            );
+        }
+        
+        available
+    }
+    
+    /// Queue images for background loading based on current selection
+    pub fn queue_background_loading(&mut self) {
+        if let Some(current_index) = self.selected_image_index {
+            // Clear existing queue
+            self.ui_state.background_load_queue.clear();
+            
+            // Queue current image and nearby images for loading
+            let start = current_index.saturating_sub(2);
+            let end = (current_index + 3).min(self.images.len());
+            
+            for i in start..end {
+                let image_path = &self.images[i].path;
+                if self.images[i].full_image.is_none() {
+                    self.ui_state.background_load_queue.push_back(image_path.clone());
+                }
+            }
+        }
+    }
+    
+    /// Process one item from the background loading queue
+    pub fn process_background_loading(&mut self, ctx: &egui::Context) -> bool {
+        if let Some(path) = self.ui_state.background_load_queue.pop_front() {
+            // Find the image in our list
+            if let Some(image) = self.images.iter_mut().find(|img| img.path == path) {
+                if image.full_image.is_none() {
+                    // Load the image in background
+                    match load_full_image_async(&path) {
+                        Ok(color_image) => {
+                            let texture = ctx.load_texture(
+                                format!("full_image_{}", path.display()),
+                                color_image,
+                                egui::TextureOptions::default(),
+                            );
+                            image.full_image = Some(texture);
+                            return true; // Successfully loaded
+                        }
+                        Err(_) => {
+                            // Failed to load, skip this image
+                        }
+                    }
+                }
+            }
+        }
+        false // No more items to process
+    }
+    
+    /// Clean up unused textures to free memory
+    pub fn cleanup_unused_textures(&mut self) {
+        if let Some(current_index) = self.selected_image_index {
+            // Keep textures for current image and nearby images (±5)
+            let keep_start = current_index.saturating_sub(5);
+            let keep_end = (current_index + 6).min(self.images.len());
+            
+            for (i, image) in self.images.iter_mut().enumerate() {
+                if i < keep_start || i >= keep_end {
+                    // Clear full image texture for distant images
+                    image.full_image = None;
+                }
+            }
+        }
+        
+        // Clean up old thumbnails from cache
+        self.ui_state.thumbnail_cache.cleanup_old_entries(100); // Keep last 100 accessed
+    }
+    
+    /// Update frame rate tracking
+    pub fn update_frame_timing(&mut self) {
+        let now = Instant::now();
+        if let Some(last_time) = self.ui_state.last_frame_time {
+            let frame_time = now.duration_since(last_time);
+            // If frame time is too high (low FPS), trigger cleanup
+            if frame_time.as_millis() > 33 { // Less than 30 FPS
+                self.cleanup_unused_textures();
+            }
+        }
+        self.ui_state.last_frame_time = Some(now);
+    }
+    
+    /// Handle file system errors with user-friendly messages
+    pub fn handle_fs_error(&mut self, operation: &str, path: &Path, error: std::io::Error) {
+        let user_message = match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                format!("File or directory not found: {}", path.display())
+            }
+            std::io::ErrorKind::PermissionDenied => {
+                format!("Permission denied accessing: {}", path.display())
+            }
+            std::io::ErrorKind::InvalidData => {
+                format!("Invalid or corrupted file: {}", path.display())
+            }
+            _ => {
+                format!("Failed to {} {}: {}", operation, path.display(), error)
+            }
+        };
+        
+        self.add_error_notification(user_message, ErrorType::Error, true);
+    }
+    
+    /// Clean up old error notifications
+    pub fn cleanup_notifications(&mut self) {
+        let now = Instant::now();
+        self.ui_state.error_notifications.retain(|notification| {
+            if notification.auto_dismiss {
+                now.duration_since(notification.timestamp).as_secs() < 10 // Auto-dismiss after 10 seconds
+            } else {
+                true
+            }
+        });
     }
 }
 
@@ -1027,6 +1203,31 @@ impl ThumbnailCache {
     pub fn memory_usage_mb(&self) -> f32 {
         self.current_memory_bytes as f32 / (1024.0 * 1024.0)
     }
+    
+    /// Check if a thumbnail is cached
+    pub fn contains(&self, path: &Path) -> bool {
+        self.entries.contains_key(path)
+    }
+    
+    /// Clean up old entries, keeping only the most recently accessed ones
+    pub fn cleanup_old_entries(&mut self, keep_count: usize) {
+        if self.entries.len() <= keep_count {
+            return;
+        }
+        
+        // Sort by last accessed time and keep only the most recent
+        let mut entries: Vec<_> = self.entries.iter().collect();
+        entries.sort_by(|a, b| b.1.last_accessed.cmp(&a.1.last_accessed));
+        
+        // Remove old entries
+        let to_remove: Vec<_> = entries.iter().skip(keep_count).map(|(path, _)| (*path).clone()).collect();
+        
+        for path in to_remove {
+            if let Some(entry) = self.entries.remove(&path) {
+                self.current_memory_bytes = self.current_memory_bytes.saturating_sub(entry.memory_size);
+            }
+        }
+    }
 }
 
 /// Thumbnail loading state
@@ -1036,6 +1237,42 @@ pub enum ThumbnailLoadState {
     Loading,
     Loaded,
     Error(String),
+}
+
+/// Error notification for non-blocking error display
+#[derive(Clone, Debug)]
+pub struct ErrorNotification {
+    pub message: String,
+    pub error_type: ErrorType,
+    pub timestamp: Instant,
+    pub auto_dismiss: bool,
+}
+
+/// Types of errors for different handling
+#[derive(Clone, Debug, PartialEq)]
+pub enum ErrorType {
+    Info,
+    Warning,
+    Error,
+    Critical,
+}
+
+/// Modal dialog state for critical errors
+#[derive(Default)]
+pub struct ModalDialog {
+    pub is_open: bool,
+    pub title: String,
+    pub message: String,
+    pub dialog_type: DialogType,
+}
+
+/// Types of modal dialogs
+#[derive(Default, PartialEq, Clone)]
+pub enum DialogType {
+    #[default]
+    Error,
+    Confirmation,
+    Info,
 }
 
 /// UI state for managing interface elements
@@ -1062,6 +1299,18 @@ pub struct UiState {
     pub output_directory: Option<PathBuf>,
     pub window_size: Option<(f32, f32)>,
     pub window_position: Option<(f32, f32)>,
+    #[serde(skip)]
+    pub error_notifications: VecDeque<ErrorNotification>,
+    #[serde(skip)]
+    pub modal_dialog: ModalDialog,
+    #[serde(skip)]
+    pub lapsify_cli_available: Option<bool>,
+    #[serde(skip)]
+    pub show_help_dialog: bool,
+    #[serde(skip)]
+    pub background_load_queue: VecDeque<PathBuf>,
+    #[serde(skip)]
+    pub last_frame_time: Option<Instant>,
 }
 
 impl Default for UiState {
@@ -1081,6 +1330,12 @@ impl Default for UiState {
             output_directory: None,
             window_size: None,
             window_position: None,
+            error_notifications: VecDeque::new(),
+            modal_dialog: ModalDialog::default(),
+            lapsify_cli_available: None,
+            show_help_dialog: false,
+            background_load_queue: VecDeque::new(),
+            last_frame_time: None,
         }
     }
 }
@@ -1620,12 +1875,22 @@ impl LapsifyApp {
                         Err(error) => {
                             // Error scanning images
                             self.state.ui_state.folder_error = Some(format!("Error scanning images: {}", error));
+                            self.state.add_error_notification(
+                                format!("Error scanning images: {}", error),
+                                ErrorType::Error,
+                                true,
+                            );
                         }
                     }
                 }
                 Err(error) => {
                     // Store the validation error for display
-                    self.state.ui_state.folder_error = Some(error);
+                    self.state.ui_state.folder_error = Some(error.clone());
+                    self.state.add_error_notification(
+                        error,
+                        ErrorType::Warning,
+                        true,
+                    );
                 }
             }
         }
@@ -1660,18 +1925,45 @@ impl LapsifyApp {
         }
     }
     
-    /// Load thumbnails for images visible in the carousel viewport
+    /// Load thumbnails for images visible in the carousel viewport (optimized)
     fn load_visible_carousel_thumbnails(&mut self, ctx: &egui::Context) {
         let (start, end) = self.state.ui_state.visible_thumbnail_range;
         
-        // Load thumbnails for visible range plus a buffer
-        let buffer = 3; // Load 3 extra on each side
+        // Load thumbnails for visible range plus a small buffer
+        let buffer = 2; // Reduced buffer for better performance
         let start_with_buffer = start.saturating_sub(buffer);
         let end_with_buffer = std::cmp::min(end + buffer, self.state.images.len());
         
-        for i in start_with_buffer..end_with_buffer {
+        // Prioritize loading thumbnails in the visible range first
+        for i in start..end {
             if i < self.state.images.len() {
-                self.state.load_thumbnail_sync(i, ctx);
+                let image_path = &self.state.images[i].path;
+                if !self.state.ui_state.thumbnail_cache.contains(image_path) {
+                    self.state.load_thumbnail_sync(i, ctx);
+                    // Only load one thumbnail per frame to maintain smooth UI
+                    return;
+                }
+            }
+        }
+        
+        // Then load buffer thumbnails if visible ones are already loaded
+        for i in start_with_buffer..start {
+            if i < self.state.images.len() {
+                let image_path = &self.state.images[i].path;
+                if !self.state.ui_state.thumbnail_cache.contains(image_path) {
+                    self.state.load_thumbnail_sync(i, ctx);
+                    return;
+                }
+            }
+        }
+        
+        for i in end..end_with_buffer {
+            if i < self.state.images.len() {
+                let image_path = &self.state.images[i].path;
+                if !self.state.ui_state.thumbnail_cache.contains(image_path) {
+                    self.state.load_thumbnail_sync(i, ctx);
+                    return;
+                }
             }
         }
     }
@@ -1749,6 +2041,7 @@ impl LapsifyApp {
         let total_frames = self.state.images.len();
         
         thread::spawn(move || {
+            let progress_sender_clone = progress_sender.clone();
             match execute_lapsify_command_with_progress(args_clone, output_dir_clone, total_frames, progress_sender, cancel_receiver) {
                 Ok(result) => {
                     println!("CLI execution completed: {:?}", result);
@@ -1756,6 +2049,8 @@ impl LapsifyApp {
                 }
                 Err(error) => {
                     println!("CLI execution failed: {}", error);
+                    // Send error through progress channel
+                    let _ = progress_sender_clone.send(ProcessMessage::Error(error));
                     ctx_clone.request_repaint();
                 }
             }
@@ -1808,9 +2103,14 @@ impl LapsifyApp {
                     self.state.processing_status.status_message = format!("Processing: {}", output);
                 }
                 ProcessMessage::Error(error) => {
-                    self.state.processing_status.error_message = Some(error);
+                    self.state.processing_status.error_message = Some(error.clone());
                     self.state.processing_status.is_processing = false;
                     should_clear_handle = true;
+                    self.state.add_error_notification(
+                        format!("Processing error: {}", error),
+                        ErrorType::Error,
+                        false,
+                    );
                 }
                 ProcessMessage::Finished { success, output_path } => {
                     self.state.processing_status.is_processing = false;
@@ -2159,13 +2459,17 @@ impl LapsifyApp {
         
         // Folder selection and refresh buttons
         ui.horizontal(|ui| {
-            if ui.button("📁 Select Folder").clicked() {
+            if ui.button("📁 Select Folder")
+                .on_hover_text("Select a folder containing images (Ctrl+O)")
+                .clicked() {
                 self.select_folder();
             }
             
             // Show refresh button only if a folder is selected
             if self.state.selected_folder.is_some() {
-                if ui.button("🔄 Refresh").clicked() {
+                if ui.button("🔄 Refresh")
+                    .on_hover_text("Refresh image list (F5 or Ctrl+R)")
+                    .clicked() {
                     self.refresh_images();
                 }
             }
@@ -2553,7 +2857,9 @@ impl LapsifyApp {
                 ui.collapsing("Process Time-lapse", |ui| {
                     // Output directory selection
                     ui.horizontal(|ui| {
-                        if ui.button("📁 Select Output Folder").clicked() {
+                        if ui.button("📁 Select Output Folder")
+                            .on_hover_text("Choose where to save the generated time-lapse video")
+                            .clicked() {
                             self.select_output_directory();
                         }
                     });
@@ -2600,7 +2906,9 @@ impl LapsifyApp {
                         }
                         
                         // Cancel button
-                        if ui.button("❌ Cancel Processing").clicked() {
+                        if ui.button("❌ Cancel Processing")
+                            .on_hover_text("Stop the current time-lapse generation")
+                            .clicked() {
                             self.cancel_cli_execution();
                         }
                     } else {
@@ -2610,14 +2918,37 @@ impl LapsifyApp {
                             && !self.state.images.is_empty()
                             && self.state.ui_state.validation_errors.is_empty();
                         
-                        ui.add_enabled_ui(can_execute, |ui| {
-                            if ui.button("🚀 Start Processing").clicked() {
-                                match self.execute_lapsify_cli(ui.ctx()) {
-                                    Ok(()) => {
-                                        // Processing started successfully
-                                    }
-                                    Err(error) => {
-                                        self.state.processing_status.error_message = Some(error);
+                        let cli_available = self.state.check_lapsify_availability();
+                        let can_execute_with_cli = can_execute && cli_available;
+                        
+                        ui.add_enabled_ui(can_execute_with_cli, |ui| {
+                            let button_text = if !cli_available {
+                                "🚀 Start Processing (CLI Not Available)"
+                            } else {
+                                "🚀 Start Processing"
+                            };
+                            
+                            if ui.button(button_text)
+                                .on_hover_text("Start generating time-lapse video (Ctrl+Enter)")
+                                .clicked() {
+                                if !cli_available {
+                                    self.state.show_modal_error(
+                                        "Lapsify CLI Not Found".to_string(),
+                                        "The lapsify command-line tool could not be found. Please ensure it is installed and available in your system PATH.".to_string(),
+                                    );
+                                } else {
+                                    match self.execute_lapsify_cli(ui.ctx()) {
+                                        Ok(()) => {
+                                            // Processing started successfully
+                                        }
+                                        Err(error) => {
+                                            self.state.processing_status.error_message = Some(error.clone());
+                                            self.state.add_error_notification(
+                                                format!("Failed to start processing: {}", error),
+                                                ErrorType::Error,
+                                                false,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -2689,14 +3020,44 @@ impl LapsifyApp {
                     
                     // Save/Load
                     ui.horizontal(|ui| {
-                        if ui.button("💾 Save Settings").clicked() {
-                            if let Err(error) = self.save_settings_to_file() {
-                                println!("Failed to save settings: {}", error);
+                        if ui.button("💾 Save Settings")
+                            .on_hover_text("Save current settings to file (Ctrl+S)")
+                            .clicked() {
+                            match self.save_settings_to_file() {
+                                Ok(_) => {
+                                    self.state.add_error_notification(
+                                        "Settings saved successfully".to_string(),
+                                        ErrorType::Info,
+                                        true,
+                                    );
+                                }
+                                Err(error) => {
+                                    self.state.add_error_notification(
+                                        format!("Failed to save settings: {}", error),
+                                        ErrorType::Error,
+                                        false,
+                                    );
+                                }
                             }
                         }
-                        if ui.button("📁 Load Settings").clicked() {
-                            if let Err(error) = self.load_settings_from_file() {
-                                println!("Failed to load settings: {}", error);
+                        if ui.button("📁 Load Settings")
+                            .on_hover_text("Load settings from file (Ctrl+L)")
+                            .clicked() {
+                            match self.load_settings_from_file() {
+                                Ok(_) => {
+                                    self.state.add_error_notification(
+                                        "Settings loaded successfully".to_string(),
+                                        ErrorType::Info,
+                                        true,
+                                    );
+                                }
+                                Err(error) => {
+                                    self.state.add_error_notification(
+                                        format!("Failed to load settings: {}", error),
+                                        ErrorType::Error,
+                                        false,
+                                    );
+                                }
                             }
                         }
                     });
@@ -2717,6 +3078,17 @@ impl LapsifyApp {
                     
                     ui.add_space(5.0);
                     ui.label("💡 Tip: Presets are automatically saved and restored between sessions.");
+                });
+                
+                ui.separator();
+                
+                // Help button
+                ui.horizontal(|ui| {
+                    if ui.button("❓ Help")
+                        .on_hover_text("Show keyboard shortcuts and help (F1)")
+                        .clicked() {
+                        self.state.ui_state.show_help_dialog = true;
+                    }
                 });
                 
                 ui.add_space(10.0);
@@ -2900,10 +3272,14 @@ impl LapsifyApp {
                     ui.label(format!("Image {} of {}", index + 1, self.state.images.len()));
                     
                     // Navigation buttons
-                    if ui.button("◀ Prev").clicked() && index > 0 {
+                    if ui.button("◀ Prev")
+                        .on_hover_text("Previous image (Left arrow)")
+                        .clicked() && index > 0 {
                         self.state.select_image(index - 1);
                     }
-                    if ui.button("Next ▶").clicked() && index < self.state.images.len() - 1 {
+                    if ui.button("Next ▶")
+                        .on_hover_text("Next image (Right arrow)")
+                        .clicked() && index < self.state.images.len() - 1 {
                         self.state.select_image(index + 1);
                     }
                 } else {
@@ -3117,13 +3493,19 @@ impl LapsifyApp {
                     
                     // Zoom controls
                     ui.label(format!("Zoom: {:.1}%", self.state.ui_state.zoom_level * 100.0));
-                    if ui.button("🔍+").clicked() {
+                    if ui.button("🔍+")
+                        .on_hover_text("Zoom in (+)")
+                        .clicked() {
                         zoom_in = true;
                     }
-                    if ui.button("🔍-").clicked() {
+                    if ui.button("🔍-")
+                        .on_hover_text("Zoom out (-)")
+                        .clicked() {
                         zoom_out = true;
                     }
-                    if ui.button("↺ Reset").clicked() {
+                    if ui.button("↺ Reset")
+                        .on_hover_text("Reset zoom and pan (Ctrl+0)")
+                        .clicked() {
                         reset_view = true;
                     }
                     
@@ -3328,6 +3710,349 @@ impl LapsifyApp {
             });
         }
     }
+    
+    /// Show error notifications as toast-style messages
+    fn show_error_notifications(&mut self, ctx: &egui::Context) {
+        let notifications = self.state.ui_state.error_notifications.clone();
+        let mut to_remove = Vec::new();
+        
+        for (index, notification) in notifications.iter().enumerate() {
+            let (bg_color, text_color) = match notification.error_type {
+                ErrorType::Info => (egui::Color32::from_rgb(70, 130, 180), egui::Color32::WHITE),
+                ErrorType::Warning => (egui::Color32::from_rgb(255, 165, 0), egui::Color32::BLACK),
+                ErrorType::Error => (egui::Color32::from_rgb(220, 20, 60), egui::Color32::WHITE),
+                ErrorType::Critical => (egui::Color32::from_rgb(139, 0, 0), egui::Color32::WHITE),
+            };
+            
+            let y_offset = 10.0 + (index as f32 * 60.0);
+            
+            egui::Window::new(format!("notification_{}", index))
+                .title_bar(false)
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::RIGHT_TOP, egui::Vec2::new(-10.0, y_offset))
+                .fixed_size(egui::Vec2::new(350.0, 50.0))
+                .frame(egui::Frame::window(&ctx.style()).fill(bg_color))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let icon = match notification.error_type {
+                            ErrorType::Info => "ℹ️",
+                            ErrorType::Warning => "⚠️",
+                            ErrorType::Error => "❌",
+                            ErrorType::Critical => "🚨",
+                        };
+                        
+                        ui.colored_label(text_color, icon);
+                        ui.colored_label(text_color, &notification.message);
+                        
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕").clicked() {
+                                to_remove.push(index);
+                            }
+                        });
+                    });
+                });
+        }
+        
+        // Remove dismissed notifications
+        for &index in to_remove.iter().rev() {
+            self.state.ui_state.error_notifications.remove(index);
+        }
+    }
+    
+    /// Show modal dialog for critical errors
+    fn show_modal_dialog(&mut self, ctx: &egui::Context) {
+        if !self.state.ui_state.modal_dialog.is_open {
+            return;
+        }
+        
+        let title = self.state.ui_state.modal_dialog.title.clone();
+        let message = self.state.ui_state.modal_dialog.message.clone();
+        let dialog_type = self.state.ui_state.modal_dialog.dialog_type.clone();
+        
+        let mut should_close = false;
+        
+        egui::Window::new(&title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    let icon = match dialog_type {
+                        DialogType::Error => "❌",
+                        DialogType::Confirmation => "❓",
+                        DialogType::Info => "ℹ️",
+                    };
+                    
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new(icon).size(32.0));
+                    ui.add_space(10.0);
+                    
+                    ui.label(&message);
+                    ui.add_space(20.0);
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() {
+                            should_close = true;
+                        }
+                        
+                        if dialog_type == DialogType::Confirmation {
+                            if ui.button("Cancel").clicked() {
+                                should_close = true;
+                            }
+                        }
+                    });
+                });
+            });
+        
+        if should_close {
+            self.state.ui_state.modal_dialog.is_open = false;
+        }
+    }
+    
+    /// Handle keyboard shortcuts for common actions
+    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+        ctx.input_mut(|i| {
+            // Folder selection: Ctrl/Cmd + O
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::O)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::MAC_CMD, egui::Key::O)) {
+                self.select_folder();
+            }
+            
+            // Refresh images: F5 or Ctrl/Cmd + R
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::F5)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::R)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::MAC_CMD, egui::Key::R)) {
+                if self.state.selected_folder.is_some() {
+                    self.refresh_images();
+                }
+            }
+            
+            // Save settings: Ctrl/Cmd + S
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::S)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::MAC_CMD, egui::Key::S)) {
+                if let Err(error) = self.save_settings_to_file() {
+                    self.state.add_error_notification(
+                        format!("Failed to save settings: {}", error),
+                        ErrorType::Error,
+                        false,
+                    );
+                } else {
+                    self.state.add_error_notification(
+                        "Settings saved successfully".to_string(),
+                        ErrorType::Info,
+                        true,
+                    );
+                }
+            }
+            
+            // Load settings: Ctrl/Cmd + L
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::L)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::MAC_CMD, egui::Key::L)) {
+                if let Err(error) = self.load_settings_from_file() {
+                    self.state.add_error_notification(
+                        format!("Failed to load settings: {}", error),
+                        ErrorType::Error,
+                        false,
+                    );
+                } else {
+                    self.state.add_error_notification(
+                        "Settings loaded successfully".to_string(),
+                        ErrorType::Info,
+                        true,
+                    );
+                }
+            }
+            
+            // Image navigation: Arrow keys
+            if !self.state.images.is_empty() {
+                if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::ArrowLeft)) {
+                    if let Some(current) = self.state.selected_image_index {
+                        if current > 0 {
+                            self.state.select_image(current - 1);
+                        }
+                    }
+                }
+                
+                if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::ArrowRight)) {
+                    if let Some(current) = self.state.selected_image_index {
+                        if current < self.state.images.len() - 1 {
+                            self.state.select_image(current + 1);
+                        }
+                    } else if !self.state.images.is_empty() {
+                        self.state.select_image(0);
+                    }
+                }
+                
+                // Home/End for first/last image
+                if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Home)) {
+                    self.state.select_image(0);
+                }
+                
+                if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::End)) {
+                    self.state.select_image(self.state.images.len() - 1);
+                }
+            }
+            
+            // Zoom controls: Plus/Minus
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Equals)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Equals)) {
+                self.state.ui_state.zoom_level = (self.state.ui_state.zoom_level * 1.2).min(5.0);
+            }
+            
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Minus)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Minus)) {
+                self.state.ui_state.zoom_level = (self.state.ui_state.zoom_level / 1.2).max(0.1);
+            }
+            
+            // Reset zoom: Ctrl/Cmd + 0
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Num0)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::MAC_CMD, egui::Key::Num0)) {
+                self.state.ui_state.zoom_level = 1.0;
+                self.state.ui_state.pan_offset = egui::Vec2::ZERO;
+            }
+            
+            // Start processing: Ctrl/Cmd + Enter
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::Enter)) ||
+               i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::MAC_CMD, egui::Key::Enter)) {
+                if !self.state.processing_status.is_processing && 
+                   !self.state.images.is_empty() && 
+                   self.state.check_lapsify_availability() {
+                    match self.execute_lapsify_cli(ctx) {
+                        Ok(()) => {
+                            // Processing started successfully
+                        }
+                        Err(error) => {
+                            self.state.add_error_notification(
+                                format!("Failed to start processing: {}", error),
+                                ErrorType::Error,
+                                false,
+                            );
+                        }
+                    }
+                }
+            }
+            
+            // Show help: F1
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::F1)) {
+                self.state.ui_state.show_help_dialog = true;
+            }
+            
+            // Escape to close modal dialogs
+            if i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::Escape)) {
+                if self.state.ui_state.modal_dialog.is_open {
+                    self.state.ui_state.modal_dialog.is_open = false;
+                }
+                if self.state.ui_state.show_help_dialog {
+                    self.state.ui_state.show_help_dialog = false;
+                }
+            }
+        });
+    }
+    
+    /// Show help dialog with keyboard shortcuts
+    fn show_help_dialog(&mut self, ctx: &egui::Context) {
+        if !self.state.ui_state.show_help_dialog {
+            return;
+        }
+        
+        let mut should_close = false;
+        
+        egui::Window::new("Keyboard Shortcuts")
+            .collapsible(false)
+            .resizable(true)
+            .default_size(egui::Vec2::new(500.0, 600.0))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.heading("Lapsify GUI - Keyboard Shortcuts");
+                ui.separator();
+                
+                ui.columns(2, |columns| {
+                    columns[0].heading("Action");
+                    columns[1].heading("Shortcut");
+                });
+                
+                ui.separator();
+                
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.columns(2, |columns| {
+                        // File operations
+                        columns[0].label("Select Folder");
+                        columns[1].label("Ctrl+O / Cmd+O");
+                        
+                        columns[0].label("Refresh Images");
+                        columns[1].label("F5 / Ctrl+R / Cmd+R");
+                        
+                        columns[0].label("Save Settings");
+                        columns[1].label("Ctrl+S / Cmd+S");
+                        
+                        columns[0].label("Load Settings");
+                        columns[1].label("Ctrl+L / Cmd+L");
+                        
+                        columns[0].separator();
+                        columns[1].separator();
+                        
+                        // Image navigation
+                        columns[0].label("Previous Image");
+                        columns[1].label("Left Arrow");
+                        
+                        columns[0].label("Next Image");
+                        columns[1].label("Right Arrow");
+                        
+                        columns[0].label("First Image");
+                        columns[1].label("Home");
+                        
+                        columns[0].label("Last Image");
+                        columns[1].label("End");
+                        
+                        columns[0].separator();
+                        columns[1].separator();
+                        
+                        // Zoom controls
+                        columns[0].label("Zoom In");
+                        columns[1].label("+ / Ctrl++");
+                        
+                        columns[0].label("Zoom Out");
+                        columns[1].label("- / Ctrl+-");
+                        
+                        columns[0].label("Reset Zoom");
+                        columns[1].label("Ctrl+0 / Cmd+0");
+                        
+                        columns[0].separator();
+                        columns[1].separator();
+                        
+                        // Processing
+                        columns[0].label("Start Processing");
+                        columns[1].label("Ctrl+Enter / Cmd+Enter");
+                        
+                        columns[0].separator();
+                        columns[1].separator();
+                        
+                        // General
+                        columns[0].label("Show Help");
+                        columns[1].label("F1");
+                        
+                        columns[0].label("Close Dialog");
+                        columns[1].label("Escape");
+                    });
+                });
+                
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        should_close = true;
+                    }
+                    
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label("Press F1 anytime to show this help");
+                    });
+                });
+            });
+        
+        if should_close {
+            self.state.ui_state.show_help_dialog = false;
+        }
+    }
 }
 
 impl eframe::App for LapsifyApp {
@@ -3349,6 +4074,9 @@ impl eframe::App for LapsifyApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(width, height)));
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::Pos2::new(x, y)));
             }
+            
+            // Check lapsify CLI availability
+            self.state.check_lapsify_availability();
             
             // Rescan images if folder was restored
             if self.state.selected_folder.is_some() {
@@ -3406,6 +4134,48 @@ impl eframe::App for LapsifyApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_main_viewer(ui);
         });
+        
+        // Handle keyboard shortcuts
+        self.handle_keyboard_shortcuts(ctx);
+        
+        // Performance optimizations
+        self.state.update_frame_timing();
+        
+        // Process background loading (limit to 1 per frame for smooth UI)
+        let loaded_something = self.state.process_background_loading(ctx);
+        
+        // Only request repaint if we loaded something or if processing is active
+        if loaded_something || self.state.processing_status.is_processing {
+            ctx.request_repaint();
+        }
+        
+        // Clean up old notifications
+        self.state.cleanup_notifications();
+        
+        // Show error notifications
+        self.show_error_notifications(ctx);
+        
+        // Show modal dialog if open
+        self.show_modal_dialog(ctx);
+        
+        // Show help dialog if open
+        self.show_help_dialog(ctx);
+        
+        // Periodic cleanup (every 5 seconds)
+        static mut LAST_CLEANUP: Option<Instant> = None;
+        let should_cleanup = unsafe {
+            match LAST_CLEANUP {
+                None => true,
+                Some(last) => last.elapsed().as_secs() > 5,
+            }
+        };
+        
+        if should_cleanup {
+            self.state.cleanup_unused_textures();
+            unsafe {
+                LAST_CLEANUP = Some(Instant::now());
+            }
+        }
         
         // Save session state periodically (every 30 seconds or on significant changes)
         static mut LAST_SAVE: Option<Instant> = None;

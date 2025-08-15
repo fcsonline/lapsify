@@ -122,7 +122,7 @@
   - _Requirements: 4.4, 4.5_
 
 -
-  16. [ ] Add comprehensive error handling
+  16. [x] Add comprehensive error handling
   - Implement error display system with non-blocking notifications
   - Create modal dialogs for critical errors requiring user action
   - Add file system error handling with user-friendly messages
@@ -130,7 +130,7 @@
   - _Requirements: 1.3, 7.4_
 
 -
-  17. [ ] Create keyboard navigation and accessibility
+  17. [x] Create keyboard navigation and accessibility
   - Add keyboard shortcuts for common actions (folder selection, image
     navigation)
   - Implement tab navigation through UI elements
@@ -139,7 +139,7 @@
   - _Requirements: 6.1_
 
 -
-  18. [ ] Implement performance optimizations
+  18. [x] Implement performance optimizations
   - Add background loading for full-resolution images
   - Implement texture cleanup and memory management
   - Create efficient thumbnail loading with viewport culling
