@@ -177,7 +177,7 @@
   - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
 -
-  20. [ ] Move settings panel to right sidebar as per design
+  20. [x] Move settings panel to right sidebar as per design
   - Change SidePanel::left to SidePanel::right for settings panel
   - Update responsive layout constraints for right-side positioning
   - Ensure folder selection controls remain in main panel
@@ -185,7 +185,7 @@
   - _Requirements: 6.1, 6.2, 6.3, 6.5_
 
 -
-  21. [ ] Implement proper keyframe-based parameter system
+  21. [x] Implement proper keyframe-based parameter system
   - Current implementation uses simple arrays instead of proper keyframe system
   - Add KeyframeSettings and KeyframeData structs as per design
   - Implement "Number of keyframes" and "Selected keyframe" controls
@@ -195,7 +195,7 @@
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6_
 
 -
-  22. [ ] Add missing keyframe-specific parameters
+  22. [x] Add missing keyframe-specific parameters
   - Add zoom and rotation controls to keyframe parameters
   - Implement proper offset_x and offset_y keyframe controls
   - Update parameter validation for keyframe-specific ranges
@@ -203,7 +203,7 @@
   - _Requirements: 8.2, 8.3, 8.4_
 
 -
-  23. [ ] Add comprehensive testing and validation
+  23. [x] Add comprehensive testing and validation
   - Test end-to-end workflow with actual image folders
   - Validate CLI command generation with keyframe arrays
   - Test error handling with various edge cases

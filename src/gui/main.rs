@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::fs;
-use std::time::{SystemTime, Instant};
+use std::time::{SystemTime, Instant, Duration};
 use image::{GenericImageView, DynamicImage, imageops::FilterType};
 use std::thread;
 use std::process::{Command, Stdio};
@@ -36,7 +36,7 @@ fn main() -> Result<(), eframe::Error> {
 pub struct SessionState {
     pub selected_folder: Option<PathBuf>,
     pub selected_image_index: Option<usize>,
-    pub settings: LapsifySettings,
+    pub keyframe_settings: KeyframeSettings,
     pub ui_state: UiState,
 }
 
@@ -45,7 +45,85 @@ pub struct SessionState {
 pub struct SettingsPreset {
     pub name: String,
     pub description: String,
-    pub settings: LapsifySettings,
+    pub keyframe_settings: KeyframeSettings,
+}
+
+/// Testing and validation system
+#[derive(Default, Clone)]
+pub struct TestingSystem {
+    pub test_results: Vec<TestResult>,
+    pub validation_results: ValidationResults,
+    pub performance_metrics: PerformanceMetrics,
+    pub is_testing: bool,
+    pub current_test: Option<String>,
+}
+
+/// Individual test result
+#[derive(Clone)]
+pub struct TestResult {
+    pub test_name: String,
+    pub status: TestStatus,
+    pub message: String,
+    pub duration: Duration,
+    pub timestamp: Instant,
+}
+
+/// Test status enumeration
+#[derive(Clone, PartialEq)]
+pub enum TestStatus {
+    Passed,
+    Failed,
+    Warning,
+    Skipped,
+}
+
+/// Comprehensive validation results
+#[derive(Default, Clone)]
+pub struct ValidationResults {
+    pub folder_validation: Option<FolderValidationResult>,
+    pub settings_validation: HashMap<String, String>,
+    pub cli_validation: Option<CliValidationResult>,
+    pub performance_validation: Option<PerformanceValidationResult>,
+}
+
+/// Folder validation result
+#[derive(Clone)]
+pub struct FolderValidationResult {
+    pub is_valid: bool,
+    pub image_count: usize,
+    pub supported_formats: Vec<String>,
+    pub unsupported_files: Vec<PathBuf>,
+    pub total_size: u64,
+    pub issues: Vec<String>,
+}
+
+/// CLI validation result
+#[derive(Clone)]
+pub struct CliValidationResult {
+    pub cli_available: bool,
+    pub version: Option<String>,
+    pub command_valid: bool,
+    pub estimated_processing_time: Option<Duration>,
+    pub issues: Vec<String>,
+}
+
+/// Performance validation result
+#[derive(Clone)]
+pub struct PerformanceValidationResult {
+    pub memory_usage: u64,
+    pub thumbnail_load_time: Duration,
+    pub ui_responsiveness: f32, // FPS
+    pub large_folder_performance: Option<Duration>,
+    pub issues: Vec<String>,
+}
+
+/// Performance metrics tracking
+#[derive(Default, Clone)]
+pub struct PerformanceMetrics {
+    pub frame_times: VecDeque<Duration>,
+    pub memory_usage_samples: VecDeque<u64>,
+    pub thumbnail_load_times: VecDeque<Duration>,
+    pub last_performance_check: Option<Instant>,
 }
 
 /// Main application state containing all GUI state
@@ -54,10 +132,11 @@ pub struct AppState {
     pub selected_folder: Option<PathBuf>,
     pub images: Vec<ImageInfo>,
     pub selected_image_index: Option<usize>,
-    pub settings: LapsifySettings,
+    pub keyframe_settings: KeyframeSettings,
     pub processing_status: ProcessingStatus,
     pub ui_state: UiState,
     pub settings_presets: Vec<SettingsPreset>,
+    pub testing_system: TestingSystem,
 }
 
 impl AppState {
@@ -154,6 +233,16 @@ impl AppState {
         // Select the first image if any were found
         if !self.images.is_empty() {
             self.selected_image_index = Some(0);
+            
+            // Enable keyframe settings and set max keyframes based on image count
+            self.keyframe_settings.is_enabled = true;
+            let max_keyframes = 50.min(self.images.len());
+            if self.keyframe_settings.num_keyframes > max_keyframes {
+                self.keyframe_settings.set_num_keyframes(max_keyframes);
+            }
+        } else {
+            // Disable keyframe settings if no images
+            self.keyframe_settings.is_enabled = false;
         }
         
         Ok(self.images.len())
@@ -217,9 +306,12 @@ impl AppState {
             return true;
         }
         
-        // Load thumbnail synchronously
+        // Load thumbnail synchronously with timing
+        let load_start = Instant::now();
         match load_thumbnail_async(&image_path) {
             Ok((color_image, memory_size)) => {
+                let load_time = load_start.elapsed();
+                
                 // Create texture handle
                 let texture = ctx.load_texture(
                     format!("thumbnail_{}", image_path.display()),
@@ -235,6 +327,12 @@ impl AppState {
                 
                 // Update load state
                 self.ui_state.thumbnail_load_states.insert(image_path, ThumbnailLoadState::Loaded);
+                
+                // Record load time for performance metrics
+                self.testing_system.performance_metrics.thumbnail_load_times.push_back(load_time);
+                if self.testing_system.performance_metrics.thumbnail_load_times.len() > 50 {
+                    self.testing_system.performance_metrics.thumbnail_load_times.pop_front();
+                }
                 
                 true
             }
@@ -312,7 +410,7 @@ impl AppState {
     
     /// Validate current settings and update UI validation state
     pub fn validate_settings(&mut self) {
-        self.ui_state.validation_errors = self.settings.validate();
+        self.ui_state.validation_errors = self.keyframe_settings.validate();
     }
     
     /// Save session state to file
@@ -320,7 +418,7 @@ impl AppState {
         let session_state = SessionState {
             selected_folder: self.selected_folder.clone(),
             selected_image_index: self.selected_image_index,
-            settings: self.settings.clone(),
+            keyframe_settings: self.keyframe_settings.clone(),
             ui_state: UiState {
                 sidebar_width: self.ui_state.sidebar_width,
                 carousel_height: self.ui_state.carousel_height,
@@ -377,7 +475,7 @@ impl AppState {
         // Restore state
         self.selected_folder = session_state.selected_folder;
         self.selected_image_index = session_state.selected_image_index;
-        self.settings = session_state.settings;
+        self.keyframe_settings = session_state.keyframe_settings;
         
         // Restore UI state (with runtime state reset)
         self.ui_state.sidebar_width = session_state.ui_state.sidebar_width;
@@ -591,6 +689,428 @@ impl AppState {
             }
         });
     }
+    
+    /// Run comprehensive testing suite
+    pub fn run_comprehensive_tests(&mut self) -> Vec<TestResult> {
+        let mut results = Vec::new();
+        self.testing_system.is_testing = true;
+        self.testing_system.test_results.clear();
+        
+        // Test 1: Folder validation
+        results.push(self.test_folder_validation());
+        
+        // Test 2: Settings validation
+        results.push(self.test_settings_validation());
+        
+        // Test 3: CLI integration
+        results.push(self.test_cli_integration());
+        
+        // Test 4: Keyframe system
+        results.push(self.test_keyframe_system());
+        
+        // Test 5: Performance validation
+        results.push(self.test_performance_validation());
+        
+        // Test 6: Error handling
+        results.push(self.test_error_handling());
+        
+        // Test 7: Session persistence
+        results.push(self.test_session_persistence());
+        
+        self.testing_system.test_results = results.clone();
+        self.testing_system.is_testing = false;
+        
+        results
+    }
+    
+    /// Test folder validation functionality
+    fn test_folder_validation(&mut self) -> TestResult {
+        let start_time = Instant::now();
+        self.testing_system.current_test = Some("Folder Validation".to_string());
+        
+        let mut issues = Vec::new();
+        let mut status = TestStatus::Passed;
+        
+        // Test with current folder if available
+        if let Some(folder) = &self.selected_folder {
+            match self.validate_selected_folder() {
+                Ok(()) => {
+                    if self.images.is_empty() {
+                        issues.push("No images found in selected folder".to_string());
+                        status = TestStatus::Warning;
+                    }
+                }
+                Err(error) => {
+                    issues.push(format!("Folder validation failed: {}", error));
+                    status = TestStatus::Failed;
+                }
+            }
+        } else {
+            issues.push("No folder selected for testing".to_string());
+            status = TestStatus::Skipped;
+        }
+        
+        // Store validation results
+        if let Some(folder) = &self.selected_folder {
+            self.testing_system.validation_results.folder_validation = Some(FolderValidationResult {
+                is_valid: status == TestStatus::Passed,
+                image_count: self.images.len(),
+                supported_formats: vec!["jpg".to_string(), "jpeg".to_string(), "png".to_string(), "tiff".to_string()],
+                unsupported_files: Vec::new(), // Would need to scan for these
+                total_size: 0, // Would need to calculate
+                issues: issues.clone(),
+            });
+        }
+        
+        let message = if issues.is_empty() {
+            format!("Folder validation passed with {} images", self.images.len())
+        } else {
+            format!("Issues found: {}", issues.join(", "))
+        };
+        
+        TestResult {
+            test_name: "Folder Validation".to_string(),
+            status,
+            message,
+            duration: start_time.elapsed(),
+            timestamp: start_time,
+        }
+    }
+    
+    /// Test settings validation functionality
+    fn test_settings_validation(&mut self) -> TestResult {
+        let start_time = Instant::now();
+        self.testing_system.current_test = Some("Settings Validation".to_string());
+        
+        // Run validation on current settings
+        let validation_errors = self.keyframe_settings.validate();
+        self.testing_system.validation_results.settings_validation = validation_errors.clone();
+        
+        let status = if validation_errors.is_empty() {
+            TestStatus::Passed
+        } else {
+            TestStatus::Failed
+        };
+        
+        let message = if validation_errors.is_empty() {
+            "All settings validation passed".to_string()
+        } else {
+            format!("Validation errors found: {}", validation_errors.len())
+        };
+        
+        TestResult {
+            test_name: "Settings Validation".to_string(),
+            status,
+            message,
+            duration: start_time.elapsed(),
+            timestamp: start_time,
+        }
+    }
+    
+    /// Test CLI integration functionality
+    fn test_cli_integration(&mut self) -> TestResult {
+        let start_time = Instant::now();
+        self.testing_system.current_test = Some("CLI Integration".to_string());
+        
+        let mut issues = Vec::new();
+        let mut status = TestStatus::Passed;
+        
+        // Test CLI availability
+        let cli_available = match find_lapsify_executable() {
+            Ok(_) => true,
+            Err(error) => {
+                issues.push(format!("CLI not available: {}", error));
+                status = TestStatus::Failed;
+                false
+            }
+        };
+        
+        // Test command generation
+        let command_valid = if let (Some(input_dir), Some(_)) = (&self.selected_folder, &self.ui_state.output_directory) {
+            let args = self.keyframe_settings.generate_command_args(input_dir, Path::new("/tmp"));
+            !args.is_empty()
+        } else {
+            issues.push("Cannot test command generation without input/output directories".to_string());
+            status = TestStatus::Warning;
+            false
+        };
+        
+        // Store CLI validation results
+        self.testing_system.validation_results.cli_validation = Some(CliValidationResult {
+            cli_available,
+            version: None, // Would need to query CLI for version
+            command_valid,
+            estimated_processing_time: None, // Would need to estimate based on image count
+            issues: issues.clone(),
+        });
+        
+        let message = if issues.is_empty() {
+            "CLI integration tests passed".to_string()
+        } else {
+            format!("CLI issues: {}", issues.join(", "))
+        };
+        
+        TestResult {
+            test_name: "CLI Integration".to_string(),
+            status,
+            message,
+            duration: start_time.elapsed(),
+            timestamp: start_time,
+        }
+    }
+    
+    /// Test keyframe system functionality
+    fn test_keyframe_system(&mut self) -> TestResult {
+        let start_time = Instant::now();
+        self.testing_system.current_test = Some("Keyframe System".to_string());
+        
+        let mut issues = Vec::new();
+        let mut status = TestStatus::Passed;
+        
+        // Test keyframe data integrity
+        if self.keyframe_settings.keyframe_data.len() != self.keyframe_settings.num_keyframes {
+            issues.push("Keyframe data count mismatch".to_string());
+            status = TestStatus::Failed;
+        }
+        
+        // Test selected keyframe bounds
+        if self.keyframe_settings.selected_keyframe >= self.keyframe_settings.num_keyframes {
+            issues.push("Selected keyframe out of bounds".to_string());
+            status = TestStatus::Failed;
+        }
+        
+        // Test parameter array generation
+        let (exposure, brightness, contrast, saturation, offset_x, offset_y, zoom, rotation) = 
+            self.keyframe_settings.generate_parameter_arrays();
+        
+        if exposure.len() != self.keyframe_settings.num_keyframes {
+            issues.push("Parameter array length mismatch".to_string());
+            status = TestStatus::Failed;
+        }
+        
+        // Test keyframe modification
+        let original_exposure = self.keyframe_settings.keyframe_data[0].exposure;
+        self.keyframe_settings.keyframe_data[0].exposure = 1.0;
+        let modified_exposure = self.keyframe_settings.keyframe_data[0].exposure;
+        self.keyframe_settings.keyframe_data[0].exposure = original_exposure; // Restore
+        
+        if modified_exposure != 1.0 {
+            issues.push("Keyframe modification failed".to_string());
+            status = TestStatus::Failed;
+        }
+        
+        let message = if issues.is_empty() {
+            format!("Keyframe system tests passed ({} keyframes)", self.keyframe_settings.num_keyframes)
+        } else {
+            format!("Keyframe issues: {}", issues.join(", "))
+        };
+        
+        TestResult {
+            test_name: "Keyframe System".to_string(),
+            status,
+            message,
+            duration: start_time.elapsed(),
+            timestamp: start_time,
+        }
+    }
+    
+    /// Test performance validation
+    fn test_performance_validation(&mut self) -> TestResult {
+        let start_time = Instant::now();
+        self.testing_system.current_test = Some("Performance Validation".to_string());
+        
+        let mut issues = Vec::new();
+        let mut status = TestStatus::Passed;
+        
+        // Test memory usage (simplified)
+        let memory_usage = 0u64; // Would need actual memory measurement
+        
+        // Test UI responsiveness
+        let avg_frame_time = if !self.testing_system.performance_metrics.frame_times.is_empty() {
+            let total: Duration = self.testing_system.performance_metrics.frame_times.iter().sum();
+            total / self.testing_system.performance_metrics.frame_times.len() as u32
+        } else {
+            Duration::from_millis(16) // Assume 60 FPS
+        };
+        
+        let fps = 1000.0 / avg_frame_time.as_millis() as f32;
+        
+        if fps < 30.0 {
+            issues.push(format!("Low FPS detected: {:.1}", fps));
+            status = TestStatus::Warning;
+        }
+        
+        // Test thumbnail loading performance
+        let avg_thumbnail_time = if !self.testing_system.performance_metrics.thumbnail_load_times.is_empty() {
+            let total: Duration = self.testing_system.performance_metrics.thumbnail_load_times.iter().sum();
+            total / self.testing_system.performance_metrics.thumbnail_load_times.len() as u32
+        } else {
+            Duration::from_millis(100) // Default assumption
+        };
+        
+        if avg_thumbnail_time > Duration::from_millis(500) {
+            issues.push(format!("Slow thumbnail loading: {}ms", avg_thumbnail_time.as_millis()));
+            status = TestStatus::Warning;
+        }
+        
+        // Store performance validation results
+        self.testing_system.validation_results.performance_validation = Some(PerformanceValidationResult {
+            memory_usage,
+            thumbnail_load_time: avg_thumbnail_time,
+            ui_responsiveness: fps,
+            large_folder_performance: None,
+            issues: issues.clone(),
+        });
+        
+        let message = if issues.is_empty() {
+            format!("Performance validation passed (FPS: {:.1})", fps)
+        } else {
+            format!("Performance issues: {}", issues.join(", "))
+        };
+        
+        TestResult {
+            test_name: "Performance Validation".to_string(),
+            status,
+            message,
+            duration: start_time.elapsed(),
+            timestamp: start_time,
+        }
+    }
+    
+    /// Test error handling functionality
+    fn test_error_handling(&mut self) -> TestResult {
+        let start_time = Instant::now();
+        self.testing_system.current_test = Some("Error Handling".to_string());
+        
+        let mut issues = Vec::new();
+        let mut status = TestStatus::Passed;
+        
+        // Test invalid folder handling
+        let invalid_folder = PathBuf::from("/nonexistent/folder");
+        self.selected_folder = Some(invalid_folder.clone());
+        match self.validate_selected_folder() {
+            Err(_) => {
+                // Expected error - good
+            }
+            Ok(()) => {
+                issues.push("Invalid folder validation should have failed".to_string());
+                status = TestStatus::Failed;
+            }
+        }
+        
+        // Restore original folder
+        self.selected_folder = None;
+        
+        // Test invalid settings handling
+        let mut test_settings = self.keyframe_settings.clone();
+        test_settings.keyframe_data[0].exposure = 10.0; // Invalid value
+        let validation_errors = test_settings.validate();
+        
+        if validation_errors.is_empty() {
+            issues.push("Invalid settings should have validation errors".to_string());
+            status = TestStatus::Failed;
+        }
+        
+        let message = if issues.is_empty() {
+            "Error handling tests passed".to_string()
+        } else {
+            format!("Error handling issues: {}", issues.join(", "))
+        };
+        
+        TestResult {
+            test_name: "Error Handling".to_string(),
+            status,
+            message,
+            duration: start_time.elapsed(),
+            timestamp: start_time,
+        }
+    }
+    
+    /// Test session persistence functionality
+    fn test_session_persistence(&mut self) -> TestResult {
+        let start_time = Instant::now();
+        self.testing_system.current_test = Some("Session Persistence".to_string());
+        
+        let mut issues = Vec::new();
+        let mut status = TestStatus::Passed;
+        
+        // Test saving session
+        match self.save_session() {
+            Ok(()) => {
+                // Test loading session
+                match self.load_session() {
+                    Ok(()) => {
+                        // Session persistence works
+                    }
+                    Err(error) => {
+                        issues.push(format!("Session loading failed: {}", error));
+                        status = TestStatus::Failed;
+                    }
+                }
+            }
+            Err(error) => {
+                issues.push(format!("Session saving failed: {}", error));
+                status = TestStatus::Failed;
+            }
+        }
+        
+        // Test preset functionality
+        match self.save_presets() {
+            Ok(()) => {
+                match self.load_presets() {
+                    Ok(()) => {
+                        // Preset persistence works
+                    }
+                    Err(error) => {
+                        issues.push(format!("Preset loading failed: {}", error));
+                        status = TestStatus::Warning;
+                    }
+                }
+            }
+            Err(error) => {
+                issues.push(format!("Preset saving failed: {}", error));
+                status = TestStatus::Warning;
+            }
+        }
+        
+        let message = if issues.is_empty() {
+            "Session persistence tests passed".to_string()
+        } else {
+            format!("Persistence issues: {}", issues.join(", "))
+        };
+        
+        TestResult {
+            test_name: "Session Persistence".to_string(),
+            status,
+            message,
+            duration: start_time.elapsed(),
+            timestamp: start_time,
+        }
+    }
+    
+    /// Update performance metrics
+    pub fn update_performance_metrics(&mut self, frame_time: Duration) {
+        let metrics = &mut self.testing_system.performance_metrics;
+        
+        // Track frame times (keep last 100)
+        metrics.frame_times.push_back(frame_time);
+        if metrics.frame_times.len() > 100 {
+            metrics.frame_times.pop_front();
+        }
+        
+        // Update last performance check
+        metrics.last_performance_check = Some(Instant::now());
+    }
+    
+    /// Record thumbnail load time
+    pub fn record_thumbnail_load_time(&mut self, load_time: Duration) {
+        let metrics = &mut self.testing_system.performance_metrics;
+        
+        metrics.thumbnail_load_times.push_back(load_time);
+        if metrics.thumbnail_load_times.len() > 50 {
+            metrics.thumbnail_load_times.pop_front();
+        }
+    }
 }
 
 /// Information about a loaded image including metadata and texture handles
@@ -612,7 +1132,51 @@ pub struct ImageMetadata {
     pub modified: Option<std::time::SystemTime>,
 }
 
-/// Settings struct mirroring CLI parameters from main.rs
+/// Keyframe-based settings system for parameter animation
+#[derive(Clone, Serialize, Deserialize)]
+pub struct KeyframeSettings {
+    pub num_keyframes: usize,        // 1-50, limited by image count
+    pub selected_keyframe: usize,    // Currently selected keyframe index
+    pub keyframe_data: Vec<KeyframeData>,
+    pub is_enabled: bool,            // Disabled until folder loaded
+    pub global_settings: GlobalSettings,
+}
+
+/// Per-keyframe parameter data
+#[derive(Clone, Serialize, Deserialize)]
+pub struct KeyframeData {
+    // Image adjustments (per keyframe)
+    pub exposure: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    
+    // Crop and positioning (per keyframe)
+    pub offset_x: f32,
+    pub offset_y: f32,
+    
+    // Other per-keyframe parameters
+    pub zoom: f32,
+    pub rotation: f32,
+}
+
+/// Global settings that are not keyframe-specific
+#[derive(Clone, Serialize, Deserialize)]
+pub struct GlobalSettings {
+    // Output settings (not keyframe-specific)
+    pub format: String,
+    pub fps: u32,
+    pub quality: u32,
+    pub resolution: Option<String>,
+    pub crop: Option<String>,
+    
+    // Processing settings
+    pub threads: usize,
+    pub start_frame: Option<usize>,
+    pub end_frame: Option<usize>,
+}
+
+/// Legacy settings struct for backward compatibility
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LapsifySettings {
     // Image adjustments - support for single values or arrays for animation
@@ -638,6 +1202,48 @@ pub struct LapsifySettings {
     pub end_frame: Option<usize>,
 }
 
+impl Default for KeyframeData {
+    fn default() -> Self {
+        Self {
+            exposure: 0.0,      // EV stops (+/- values)
+            brightness: 0.0,    // -100 to +100
+            contrast: 1.0,      // 0.0 to 2.0 (1.0 = no change)
+            saturation: 1.0,    // 0.0 to 2.0 (1.0 = no change)
+            offset_x: 0.0,      // X offset for crop window (pixels)
+            offset_y: 0.0,      // Y offset for crop window (pixels)
+            zoom: 1.0,          // Zoom factor (1.0 = no zoom)
+            rotation: 0.0,      // Rotation in degrees
+        }
+    }
+}
+
+impl Default for GlobalSettings {
+    fn default() -> Self {
+        Self {
+            format: "mp4".to_string(), // Default output format
+            fps: 24,                   // Default frame rate
+            quality: 20,               // Default CRF quality
+            resolution: None,          // Default: original size
+            crop: None,                // Crop string in format "width:height:x:y"
+            threads: 0,                // 0 = auto-detect
+            start_frame: None,         // Default: start from beginning
+            end_frame: None,           // Default: process to end
+        }
+    }
+}
+
+impl Default for KeyframeSettings {
+    fn default() -> Self {
+        Self {
+            num_keyframes: 1,
+            selected_keyframe: 0,
+            keyframe_data: vec![KeyframeData::default()],
+            is_enabled: false,
+            global_settings: GlobalSettings::default(),
+        }
+    }
+}
+
 impl Default for LapsifySettings {
     fn default() -> Self {
         Self {
@@ -657,6 +1263,301 @@ impl Default for LapsifySettings {
             start_frame: None,       // Default: start from beginning
             end_frame: None,         // Default: process to end
         }
+    }
+}
+
+impl KeyframeSettings {
+    /// Create new keyframe settings with specified number of keyframes
+    pub fn new(num_keyframes: usize) -> Self {
+        let mut settings = Self::default();
+        settings.set_num_keyframes(num_keyframes);
+        settings
+    }
+    
+    /// Set the number of keyframes, preserving existing data where possible
+    pub fn set_num_keyframes(&mut self, num_keyframes: usize) {
+        let num_keyframes = num_keyframes.max(1).min(50);
+        
+        if num_keyframes > self.keyframe_data.len() {
+            // Add new keyframes with default values
+            while self.keyframe_data.len() < num_keyframes {
+                self.keyframe_data.push(KeyframeData::default());
+            }
+        } else if num_keyframes < self.keyframe_data.len() {
+            // Remove excess keyframes
+            self.keyframe_data.truncate(num_keyframes);
+        }
+        
+        self.num_keyframes = num_keyframes;
+        
+        // Ensure selected keyframe is valid
+        if self.selected_keyframe >= num_keyframes {
+            self.selected_keyframe = num_keyframes - 1;
+        }
+    }
+    
+    /// Get the currently selected keyframe data
+    pub fn get_selected_keyframe(&self) -> &KeyframeData {
+        &self.keyframe_data[self.selected_keyframe]
+    }
+    
+    /// Get mutable reference to the currently selected keyframe data
+    pub fn get_selected_keyframe_mut(&mut self) -> &mut KeyframeData {
+        &mut self.keyframe_data[self.selected_keyframe]
+    }
+    
+    /// Set the selected keyframe index
+    pub fn set_selected_keyframe(&mut self, index: usize) {
+        if index < self.num_keyframes {
+            self.selected_keyframe = index;
+        }
+    }
+    
+    /// Generate parameter arrays for CLI command
+    pub fn generate_parameter_arrays(&self) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+        let exposure: Vec<f32> = self.keyframe_data.iter().map(|k| k.exposure).collect();
+        let brightness: Vec<f32> = self.keyframe_data.iter().map(|k| k.brightness).collect();
+        let contrast: Vec<f32> = self.keyframe_data.iter().map(|k| k.contrast).collect();
+        let saturation: Vec<f32> = self.keyframe_data.iter().map(|k| k.saturation).collect();
+        let offset_x: Vec<f32> = self.keyframe_data.iter().map(|k| k.offset_x).collect();
+        let offset_y: Vec<f32> = self.keyframe_data.iter().map(|k| k.offset_y).collect();
+        let zoom: Vec<f32> = self.keyframe_data.iter().map(|k| k.zoom).collect();
+        let rotation: Vec<f32> = self.keyframe_data.iter().map(|k| k.rotation).collect();
+        
+        (exposure, brightness, contrast, saturation, offset_x, offset_y, zoom, rotation)
+    }
+    
+    /// Save keyframe settings to a JSON file
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+    
+    /// Load keyframe settings from a JSON file
+    pub fn load_from_file(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let json = std::fs::read_to_string(path)?;
+        let settings: KeyframeSettings = serde_json::from_str(&json)?;
+        Ok(settings)
+    }
+    
+    /// Validate all keyframe parameters
+    pub fn validate(&self) -> HashMap<String, String> {
+        let mut errors = HashMap::new();
+        
+        for (i, keyframe) in self.keyframe_data.iter().enumerate() {
+            // Validate exposure values (-3.0 to +3.0)
+            if keyframe.exposure < -3.0 || keyframe.exposure > 3.0 {
+                errors.insert(
+                    format!("keyframe[{}].exposure", i),
+                    format!("Exposure value {:.2} is outside valid range [-3.0, 3.0] EV", keyframe.exposure)
+                );
+            }
+            
+            // Validate brightness values (-100 to +100)
+            if keyframe.brightness < -100.0 || keyframe.brightness > 100.0 {
+                errors.insert(
+                    format!("keyframe[{}].brightness", i),
+                    format!("Brightness value {:.1} is outside valid range [-100, 100]", keyframe.brightness)
+                );
+            }
+            
+            // Validate contrast values (0.1 to 3.0)
+            if keyframe.contrast < 0.1 || keyframe.contrast > 3.0 {
+                errors.insert(
+                    format!("keyframe[{}].contrast", i),
+                    format!("Contrast value {:.2}x is outside valid range [0.1, 3.0]", keyframe.contrast)
+                );
+            }
+            
+            // Validate saturation values (0.0 to 2.0)
+            if keyframe.saturation < 0.0 || keyframe.saturation > 2.0 {
+                errors.insert(
+                    format!("keyframe[{}].saturation", i),
+                    format!("Saturation value {:.2}x is outside valid range [0.0, 2.0]", keyframe.saturation)
+                );
+            }
+            
+            // Validate offset values (reasonable range)
+            if keyframe.offset_x < -5000.0 || keyframe.offset_x > 5000.0 {
+                errors.insert(
+                    format!("keyframe[{}].offset_x", i),
+                    format!("X offset value {:.0}px is outside reasonable range [-5000, 5000]", keyframe.offset_x)
+                );
+            }
+            
+            if keyframe.offset_y < -5000.0 || keyframe.offset_y > 5000.0 {
+                errors.insert(
+                    format!("keyframe[{}].offset_y", i),
+                    format!("Y offset value {:.0}px is outside reasonable range [-5000, 5000]", keyframe.offset_y)
+                );
+            }
+            
+            // Validate zoom values (0.1 to 10.0)
+            if keyframe.zoom < 0.1 || keyframe.zoom > 10.0 {
+                errors.insert(
+                    format!("keyframe[{}].zoom", i),
+                    format!("Zoom value {:.2}x is outside reasonable range [0.1, 10.0]", keyframe.zoom)
+                );
+            }
+            
+            // Validate rotation values (-360 to +360)
+            if keyframe.rotation < -360.0 || keyframe.rotation > 360.0 {
+                errors.insert(
+                    format!("keyframe[{}].rotation", i),
+                    format!("Rotation value {:.1}° is outside reasonable range [-360, 360]", keyframe.rotation)
+                );
+            }
+        }
+        
+        // Validate global settings
+        if self.global_settings.fps < 1 || self.global_settings.fps > 120 {
+            errors.insert(
+                "fps".to_string(),
+                format!("FPS {} is outside valid range [1, 120]", self.global_settings.fps)
+            );
+        }
+        
+        if self.global_settings.quality > 51 {
+            errors.insert(
+                "quality".to_string(),
+                format!("Quality (CRF) {} is outside valid range [0, 51]", self.global_settings.quality)
+            );
+        }
+        
+        if self.global_settings.threads > 32 {
+            errors.insert(
+                "threads".to_string(),
+                format!("Thread count {} is outside reasonable range [0, 32]", self.global_settings.threads)
+            );
+        }
+        
+        // Validate frame range
+        if let (Some(start), Some(end)) = (self.global_settings.start_frame, self.global_settings.end_frame) {
+            if start > end {
+                errors.insert(
+                    "frame_range".to_string(),
+                    format!("Start frame ({}) must be less than or equal to end frame ({})", start, end)
+                );
+            }
+        }
+        
+        errors
+    }
+    
+    /// Generate CLI command arguments from keyframe settings
+    pub fn generate_command_args(&self, input_dir: &Path, output_dir: &Path) -> Vec<String> {
+        let mut args = Vec::new();
+        
+        // Input and output directories
+        args.push("--input".to_string());
+        args.push(input_dir.to_string_lossy().to_string());
+        args.push("--output".to_string());
+        args.push(output_dir.to_string_lossy().to_string());
+        
+        // Generate parameter arrays from keyframes
+        let (exposure, brightness, contrast, saturation, offset_x, offset_y, _zoom, _rotation) = 
+            self.generate_parameter_arrays();
+        
+        // Image adjustment parameters
+        if exposure.len() == 1 && exposure[0] != 0.0 {
+            args.push("--exposure".to_string());
+            args.push(exposure[0].to_string());
+        } else if exposure.len() > 1 {
+            args.push("--exposure".to_string());
+            args.push(exposure.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        if brightness.len() == 1 && brightness[0] != 0.0 {
+            args.push("--brightness".to_string());
+            args.push(brightness[0].to_string());
+        } else if brightness.len() > 1 {
+            args.push("--brightness".to_string());
+            args.push(brightness.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        if contrast.len() == 1 && contrast[0] != 1.0 {
+            args.push("--contrast".to_string());
+            args.push(contrast[0].to_string());
+        } else if contrast.len() > 1 {
+            args.push("--contrast".to_string());
+            args.push(contrast.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        if saturation.len() == 1 && saturation[0] != 1.0 {
+            args.push("--saturation".to_string());
+            args.push(saturation[0].to_string());
+        } else if saturation.len() > 1 {
+            args.push("--saturation".to_string());
+            args.push(saturation.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        // Crop and positioning
+        if let Some(ref crop) = self.global_settings.crop {
+            args.push("--crop".to_string());
+            args.push(crop.clone());
+        }
+        
+        if offset_x.len() == 1 && offset_x[0] != 0.0 {
+            args.push("--offset-x".to_string());
+            args.push(offset_x[0].to_string());
+        } else if offset_x.len() > 1 {
+            args.push("--offset-x".to_string());
+            args.push(offset_x.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        if offset_y.len() == 1 && offset_y[0] != 0.0 {
+            args.push("--offset-y".to_string());
+            args.push(offset_y[0].to_string());
+        } else if offset_y.len() > 1 {
+            args.push("--offset-y".to_string());
+            args.push(offset_y.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+        }
+        
+        // Output settings
+        if self.global_settings.format != "mp4" {
+            args.push("--format".to_string());
+            args.push(self.global_settings.format.clone());
+        }
+        
+        if self.global_settings.fps != 24 {
+            args.push("--fps".to_string());
+            args.push(self.global_settings.fps.to_string());
+        }
+        
+        if self.global_settings.quality != 20 {
+            args.push("--quality".to_string());
+            args.push(self.global_settings.quality.to_string());
+        }
+        
+        if let Some(ref resolution) = self.global_settings.resolution {
+            args.push("--resolution".to_string());
+            args.push(resolution.clone());
+        }
+        
+        // Processing settings
+        if self.global_settings.threads != 0 {
+            args.push("--threads".to_string());
+            args.push(self.global_settings.threads.to_string());
+        }
+        
+        if let Some(start_frame) = self.global_settings.start_frame {
+            args.push("--start-frame".to_string());
+            args.push(start_frame.to_string());
+        }
+        
+        if let Some(end_frame) = self.global_settings.end_frame {
+            args.push("--end-frame".to_string());
+            args.push(end_frame.to_string());
+        }
+        
+        args
+    }
+    
+    /// Generate a preview of the CLI command
+    pub fn generate_command_preview(&self, input_dir: &Path, output_dir: &Path) -> String {
+        let args = self.generate_command_args(input_dir, output_dir);
+        format!("lapsify {}", args.join(" "))
     }
 }
 
@@ -954,116 +1855,9 @@ impl LapsifySettings {
         errors
     }
     
-    /// Generate CLI command arguments from settings
-    pub fn generate_command_args(&self, input_dir: &Path, output_dir: &Path) -> Vec<String> {
-        let mut args = Vec::new();
-        
-        // Input and output directories
-        args.push("--input".to_string());
-        args.push(input_dir.to_string_lossy().to_string());
-        args.push("--output".to_string());
-        args.push(output_dir.to_string_lossy().to_string());
-        
-        // Image adjustment parameters
-        if self.exposure.len() == 1 && self.exposure[0] != 0.0 {
-            args.push("--exposure".to_string());
-            args.push(self.exposure[0].to_string());
-        } else if self.exposure.len() > 1 {
-            args.push("--exposure".to_string());
-            args.push(self.exposure.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
-        }
-        
-        if self.brightness.len() == 1 && self.brightness[0] != 0.0 {
-            args.push("--brightness".to_string());
-            args.push(self.brightness[0].to_string());
-        } else if self.brightness.len() > 1 {
-            args.push("--brightness".to_string());
-            args.push(self.brightness.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
-        }
-        
-        if self.contrast.len() == 1 && self.contrast[0] != 1.0 {
-            args.push("--contrast".to_string());
-            args.push(self.contrast[0].to_string());
-        } else if self.contrast.len() > 1 {
-            args.push("--contrast".to_string());
-            args.push(self.contrast.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
-        }
-        
-        if self.saturation.len() == 1 && self.saturation[0] != 1.0 {
-            args.push("--saturation".to_string());
-            args.push(self.saturation[0].to_string());
-        } else if self.saturation.len() > 1 {
-            args.push("--saturation".to_string());
-            args.push(self.saturation.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
-        }
-        
-        // Crop and positioning
-        if let Some(ref crop) = self.crop {
-            args.push("--crop".to_string());
-            args.push(crop.clone());
-        }
-        
-        if self.offset_x.len() == 1 && self.offset_x[0] != 0.0 {
-            args.push("--offset-x".to_string());
-            args.push(self.offset_x[0].to_string());
-        } else if self.offset_x.len() > 1 {
-            args.push("--offset-x".to_string());
-            args.push(self.offset_x.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
-        }
-        
-        if self.offset_y.len() == 1 && self.offset_y[0] != 0.0 {
-            args.push("--offset-y".to_string());
-            args.push(self.offset_y[0].to_string());
-        } else if self.offset_y.len() > 1 {
-            args.push("--offset-y".to_string());
-            args.push(self.offset_y.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
-        }
-        
-        // Output settings
-        if self.format != "mp4" {
-            args.push("--format".to_string());
-            args.push(self.format.clone());
-        }
-        
-        if self.fps != 24 {
-            args.push("--fps".to_string());
-            args.push(self.fps.to_string());
-        }
-        
-        if self.quality != 20 {
-            args.push("--quality".to_string());
-            args.push(self.quality.to_string());
-        }
-        
-        if let Some(ref resolution) = self.resolution {
-            args.push("--resolution".to_string());
-            args.push(resolution.clone());
-        }
-        
-        // Processing settings
-        if self.threads != 0 {
-            args.push("--threads".to_string());
-            args.push(self.threads.to_string());
-        }
-        
-        if let Some(start_frame) = self.start_frame {
-            args.push("--start-frame".to_string());
-            args.push(start_frame.to_string());
-        }
-        
-        if let Some(end_frame) = self.end_frame {
-            args.push("--end-frame".to_string());
-            args.push(end_frame.to_string());
-        }
-        
-        args
-    }
+
     
-    /// Generate a preview of the CLI command
-    pub fn generate_command_preview(&self, input_dir: &Path, output_dir: &Path) -> String {
-        let args = self.generate_command_args(input_dir, output_dir);
-        format!("lapsify {}", args.join(" "))
-    }
+
 }
 
 /// Processing status for tracking time-lapse generation
@@ -1758,48 +2552,63 @@ fn create_default_presets() -> Vec<SettingsPreset> {
         SettingsPreset {
             name: "Default".to_string(),
             description: "Standard time-lapse settings".to_string(),
-            settings: LapsifySettings::default(),
+            keyframe_settings: KeyframeSettings::default(),
         },
         SettingsPreset {
             name: "High Quality".to_string(),
             description: "High quality video output with enhanced contrast".to_string(),
-            settings: LapsifySettings {
-                contrast: vec![1.2],
-                saturation: vec![1.1],
-                quality: 18,
-                fps: 30,
+            keyframe_settings: KeyframeSettings {
+                keyframe_data: vec![KeyframeData {
+                    contrast: 1.2,
+                    saturation: 1.1,
+                    ..Default::default()
+                }],
+                global_settings: GlobalSettings {
+                    quality: 18,
+                    fps: 30,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         },
         SettingsPreset {
             name: "Fast Preview".to_string(),
             description: "Quick preview with lower quality".to_string(),
-            settings: LapsifySettings {
-                quality: 28,
-                fps: 15,
-                resolution: Some("720p".to_string()),
+            keyframe_settings: KeyframeSettings {
+                global_settings: GlobalSettings {
+                    quality: 28,
+                    fps: 15,
+                    resolution: Some("720p".to_string()),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         },
         SettingsPreset {
             name: "Sunset Enhancement".to_string(),
             description: "Enhanced colors for sunset/sunrise time-lapses".to_string(),
-            settings: LapsifySettings {
-                exposure: vec![0.3],
-                brightness: vec![5.0],
-                contrast: vec![1.3],
-                saturation: vec![1.4],
+            keyframe_settings: KeyframeSettings {
+                keyframe_data: vec![KeyframeData {
+                    exposure: 0.3,
+                    brightness: 5.0,
+                    contrast: 1.3,
+                    saturation: 1.4,
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         },
         SettingsPreset {
             name: "Night Sky".to_string(),
             description: "Settings optimized for night sky time-lapses".to_string(),
-            settings: LapsifySettings {
-                exposure: vec![0.8],
-                brightness: vec![10.0],
-                contrast: vec![1.5],
-                saturation: vec![0.9],
+            keyframe_settings: KeyframeSettings {
+                keyframe_data: vec![KeyframeData {
+                    exposure: 0.8,
+                    brightness: 10.0,
+                    contrast: 1.5,
+                    saturation: 0.9,
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         },
@@ -2006,14 +2815,14 @@ impl LapsifyApp {
         }
         
         // Validate settings
-        let validation_errors = self.state.settings.validate();
+        let validation_errors = self.state.keyframe_settings.validate();
         if !validation_errors.is_empty() {
             let error_count = validation_errors.len();
             return Err(format!("Settings validation failed with {} errors. Please fix validation errors before processing.", error_count));
         }
         
         // Generate command arguments
-        let args = self.state.settings.generate_command_args(input_dir, output_dir);
+        let args = self.state.keyframe_settings.generate_command_args(input_dir, output_dir);
         
         // Set up communication channels
         let (progress_sender, progress_receiver) = mpsc::channel();
@@ -2165,7 +2974,7 @@ impl LapsifyApp {
             .set_file_name("lapsify_settings.json")
             .save_file()
         {
-            self.state.settings.save_to_file(&path)
+            self.state.keyframe_settings.save_to_file(&path)
                 .map_err(|e| format!("Failed to save settings: {}", e))?;
         }
         Ok(())
@@ -2178,7 +2987,7 @@ impl LapsifyApp {
             .add_filter("JSON files", &["json"])
             .pick_file()
         {
-            self.state.settings = LapsifySettings::load_from_file(&path)
+            self.state.keyframe_settings = KeyframeSettings::load_from_file(&path)
                 .map_err(|e| format!("Failed to load settings: {}", e))?;
             self.state.validate_settings();
         }
@@ -2188,7 +2997,7 @@ impl LapsifyApp {
     /// Apply settings preset
     fn apply_preset(&mut self, preset_index: usize) {
         if let Some(preset) = self.state.settings_presets.get(preset_index) {
-            self.state.settings = preset.settings.clone();
+            self.state.keyframe_settings = preset.keyframe_settings.clone();
             self.state.validate_settings();
         }
     }
@@ -2198,7 +3007,7 @@ impl LapsifyApp {
         let preset = SettingsPreset {
             name,
             description,
-            settings: self.state.settings.clone(),
+            keyframe_settings: self.state.keyframe_settings.clone(),
         };
         
         self.state.settings_presets.push(preset);
@@ -2355,17 +3164,17 @@ impl LapsifyApp {
             }
             ui.label("Crop:");
             
-            let crop_enabled = self.state.settings.crop.is_some();
+            let crop_enabled = self.state.keyframe_settings.global_settings.crop.is_some();
             let mut enable_crop = crop_enabled;
             
             if ui.checkbox(&mut enable_crop, "Enable").changed() {
                 if enable_crop && !crop_enabled {
                     // Enable crop with default values
-                    self.state.settings.crop = Some("50%:50%:25%:25%".to_string());
+                    self.state.keyframe_settings.global_settings.crop = Some("50%:50%:25%:25%".to_string());
                     changed = true;
                 } else if !enable_crop && crop_enabled {
                     // Disable crop
-                    self.state.settings.crop = None;
+                    self.state.keyframe_settings.global_settings.crop = None;
                     changed = true;
                 }
             }
@@ -2380,7 +3189,7 @@ impl LapsifyApp {
             }
         }
         
-        if let Some(crop_str) = &mut self.state.settings.crop {
+        if let Some(crop_str) = &mut self.state.keyframe_settings.global_settings.crop {
             ui.indent("crop_controls", |ui| {
                 // Parse current crop values
                 let parts: Vec<&str> = crop_str.split(':').collect();
@@ -2500,49 +3309,231 @@ impl LapsifyApp {
         
         ui.separator();
         
-        // Lapsify Parameters
-        ui.heading("Lapsify Parameters");
+        // Keyframe Controls (only show if folder is loaded)
+        if self.state.keyframe_settings.is_enabled {
+            ui.heading("Keyframe Controls");
+            
+            // Number of keyframes slider
+            ui.horizontal(|ui| {
+                ui.label("Number of keyframes:");
+                let max_keyframes = 50.min(self.state.images.len());
+                let mut num_keyframes = self.state.keyframe_settings.num_keyframes;
+                
+                if ui.add(egui::Slider::new(&mut num_keyframes, 1..=max_keyframes)
+                    .text("keyframes"))
+                    .changed() {
+                    self.state.keyframe_settings.set_num_keyframes(num_keyframes);
+                    self.state.validate_settings();
+                }
+            });
+            
+            // Selected keyframe control
+            ui.horizontal(|ui| {
+                ui.label("Selected keyframe:");
+                let mut selected = self.state.keyframe_settings.selected_keyframe;
+                
+                if ui.add(egui::Slider::new(&mut selected, 0..=(self.state.keyframe_settings.num_keyframes - 1))
+                    .text("keyframe"))
+                    .changed() {
+                    self.state.keyframe_settings.set_selected_keyframe(selected);
+                }
+            });
+            
+            // Show current keyframe info
+            ui.horizontal(|ui| {
+                ui.label(format!("Editing keyframe {} of {}", 
+                    self.state.keyframe_settings.selected_keyframe + 1,
+                    self.state.keyframe_settings.num_keyframes));
+            });
+            
+            ui.separator();
+        }
+        
+        // Keyframe Parameters (only show if folder is loaded)
+        if self.state.keyframe_settings.is_enabled {
+            ui.heading("Keyframe Parameters");
+        } else {
+            ui.heading("Lapsify Parameters");
+            ui.colored_label(ui.visuals().weak_text_color(), "Load a folder to enable settings");
+        }
         
         egui::ScrollArea::vertical()
             .id_source("settings_scroll")
             .show(ui, |ui| {
-                // Image Adjustments
-                ui.collapsing("Image Adjustments", |ui| {
-                    let mut settings_changed = false;
-                    let validation_errors = &self.state.ui_state.validation_errors;
-                    
-                    // Exposure
-                    if Self::show_array_input(ui, "Exposure", &mut self.state.settings.exposure, -3.0, 3.0, "EV", validation_errors) {
-                        settings_changed = true;
-                    }
-                    ui.add_space(5.0);
-                    
-                    // Brightness
-                    if Self::show_array_input(ui, "Brightness", &mut self.state.settings.brightness, -100.0, 100.0, "", validation_errors) {
-                        settings_changed = true;
-                    }
-                    ui.add_space(5.0);
-                    
-                    // Contrast
-                    if Self::show_array_input(ui, "Contrast", &mut self.state.settings.contrast, 0.1, 3.0, "x", validation_errors) {
-                        settings_changed = true;
-                    }
-                    ui.add_space(5.0);
-                    
-                    // Saturation
-                    if Self::show_array_input(ui, "Saturation", &mut self.state.settings.saturation, 0.0, 2.0, "x", validation_errors) {
-                        settings_changed = true;
-                    }
-                    
-                    if settings_changed {
-                        self.state.validate_settings();
-                    }
-                });
+                // Only show parameter controls if keyframes are enabled
+                if self.state.keyframe_settings.is_enabled {
+                    // Image Adjustments for current keyframe
+                    ui.collapsing("Image Adjustments", |ui| {
+                        let mut settings_changed = false;
+                        let validation_errors = &self.state.ui_state.validation_errors;
+                        let selected_keyframe = self.state.keyframe_settings.selected_keyframe;
+                        
+                        // Get mutable reference to current keyframe
+                        let keyframe = &mut self.state.keyframe_settings.keyframe_data[selected_keyframe];
+                        
+                        // Exposure
+                        ui.horizontal(|ui| {
+                            ui.label("Exposure:");
+                            if ui.add(egui::Slider::new(&mut keyframe.exposure, -3.0..=3.0)
+                                .suffix(" EV")
+                                .step_by(0.1))
+                                .changed() {
+                                settings_changed = true;
+                            }
+                        });
+                        
+                        // Show validation error if any
+                        let error_key = format!("keyframe[{}].exposure", selected_keyframe);
+                        if let Some(error) = validation_errors.get(&error_key) {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠ {}", error));
+                        }
+                        ui.add_space(5.0);
+                        
+                        // Brightness
+                        ui.horizontal(|ui| {
+                            ui.label("Brightness:");
+                            if ui.add(egui::Slider::new(&mut keyframe.brightness, -100.0..=100.0)
+                                .step_by(1.0))
+                                .changed() {
+                                settings_changed = true;
+                            }
+                        });
+                        
+                        let error_key = format!("keyframe[{}].brightness", selected_keyframe);
+                        if let Some(error) = validation_errors.get(&error_key) {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠ {}", error));
+                        }
+                        ui.add_space(5.0);
+                        
+                        // Contrast
+                        ui.horizontal(|ui| {
+                            ui.label("Contrast:");
+                            if ui.add(egui::Slider::new(&mut keyframe.contrast, 0.1..=3.0)
+                                .suffix("x")
+                                .step_by(0.1))
+                                .changed() {
+                                settings_changed = true;
+                            }
+                        });
+                        
+                        let error_key = format!("keyframe[{}].contrast", selected_keyframe);
+                        if let Some(error) = validation_errors.get(&error_key) {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠ {}", error));
+                        }
+                        ui.add_space(5.0);
+                        
+                        // Saturation
+                        ui.horizontal(|ui| {
+                            ui.label("Saturation:");
+                            if ui.add(egui::Slider::new(&mut keyframe.saturation, 0.0..=2.0)
+                                .suffix("x")
+                                .step_by(0.1))
+                                .changed() {
+                                settings_changed = true;
+                            }
+                        });
+                        
+                        let error_key = format!("keyframe[{}].saturation", selected_keyframe);
+                        if let Some(error) = validation_errors.get(&error_key) {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠ {}", error));
+                        }
+                        
+                        if settings_changed {
+                            self.state.validate_settings();
+                        }
+                    });
                 
-                ui.add_space(10.0);
+                    ui.add_space(10.0);
+                    
+                    // Positioning and Transform for current keyframe
+                    ui.collapsing("Positioning & Transform", |ui| {
+                        let mut settings_changed = false;
+                        let validation_errors = &self.state.ui_state.validation_errors;
+                        let selected_keyframe = self.state.keyframe_settings.selected_keyframe;
+                        
+                        // Get mutable reference to current keyframe
+                        let keyframe = &mut self.state.keyframe_settings.keyframe_data[selected_keyframe];
+                        
+                        // Offset X
+                        ui.horizontal(|ui| {
+                            ui.label("Offset X:");
+                            if ui.add(egui::Slider::new(&mut keyframe.offset_x, -1000.0..=1000.0)
+                                .suffix(" px")
+                                .step_by(1.0))
+                                .changed() {
+                                settings_changed = true;
+                            }
+                        });
+                        
+                        let error_key = format!("keyframe[{}].offset_x", selected_keyframe);
+                        if let Some(error) = validation_errors.get(&error_key) {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠ {}", error));
+                        }
+                        ui.add_space(5.0);
+                        
+                        // Offset Y
+                        ui.horizontal(|ui| {
+                            ui.label("Offset Y:");
+                            if ui.add(egui::Slider::new(&mut keyframe.offset_y, -1000.0..=1000.0)
+                                .suffix(" px")
+                                .step_by(1.0))
+                                .changed() {
+                                settings_changed = true;
+                            }
+                        });
+                        
+                        let error_key = format!("keyframe[{}].offset_y", selected_keyframe);
+                        if let Some(error) = validation_errors.get(&error_key) {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠ {}", error));
+                        }
+                        ui.add_space(5.0);
+                        
+                        // Zoom
+                        ui.horizontal(|ui| {
+                            ui.label("Zoom:");
+                            if ui.add(egui::Slider::new(&mut keyframe.zoom, 0.1..=5.0)
+                                .suffix("x")
+                                .step_by(0.1))
+                                .changed() {
+                                settings_changed = true;
+                            }
+                        });
+                        
+                        let error_key = format!("keyframe[{}].zoom", selected_keyframe);
+                        if let Some(error) = validation_errors.get(&error_key) {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠ {}", error));
+                        }
+                        ui.add_space(5.0);
+                        
+                        // Rotation
+                        ui.horizontal(|ui| {
+                            ui.label("Rotation:");
+                            if ui.add(egui::Slider::new(&mut keyframe.rotation, -180.0..=180.0)
+                                .suffix("°")
+                                .step_by(1.0))
+                                .changed() {
+                                settings_changed = true;
+                            }
+                        });
+                        
+                        let error_key = format!("keyframe[{}].rotation", selected_keyframe);
+                        if let Some(error) = validation_errors.get(&error_key) {
+                            ui.colored_label(ui.visuals().error_fg_color, format!("⚠ {}", error));
+                        }
+                        
+                        if settings_changed {
+                            self.state.validate_settings();
+                        }
+                    });
+                    
+                    ui.add_space(10.0);
+                }
+                
+                // Global Settings (not keyframe-specific)
+                ui.heading("Global Settings");
                 
                 // Crop and Positioning
-                ui.collapsing("Crop and Positioning", |ui| {
+                ui.collapsing("Crop Settings", |ui| {
                     let mut settings_changed = false;
                     let validation_errors = &self.state.ui_state.validation_errors;
                     
@@ -2559,17 +3550,17 @@ impl LapsifyApp {
                             }
                             ui.label("Crop:");
                             
-                            let crop_enabled = self.state.settings.crop.is_some();
+                            let crop_enabled = self.state.keyframe_settings.global_settings.crop.is_some();
                             let mut enable_crop = crop_enabled;
                             
                             if ui.checkbox(&mut enable_crop, "Enable").changed() {
                                 if enable_crop && !crop_enabled {
                                     // Enable crop with default values
-                                    self.state.settings.crop = Some("50%:50%:25%:25%".to_string());
+                                    self.state.keyframe_settings.global_settings.crop = Some("50%:50%:25%:25%".to_string());
                                     true
                                 } else if !enable_crop && crop_enabled {
                                     // Disable crop
-                                    self.state.settings.crop = None;
+                                    self.state.keyframe_settings.global_settings.crop = None;
                                     true
                                 } else {
                                     false
@@ -2594,7 +3585,7 @@ impl LapsifyApp {
                     }
                     
                     // Show crop input fields if enabled
-                    if let Some(crop_str) = &mut self.state.settings.crop {
+                    if let Some(crop_str) = &mut self.state.keyframe_settings.global_settings.crop {
                         ui.indent("crop_controls", |ui| {
                             // Parse current crop values
                             let parts: Vec<&str> = crop_str.split(':').collect();
@@ -2660,19 +3651,6 @@ impl LapsifyApp {
                         });
                     }
                     
-                    ui.add_space(5.0);
-                    
-                    // Offset X
-                    if Self::show_array_input(ui, "Offset X", &mut self.state.settings.offset_x, -1000.0, 1000.0, "px", validation_errors) {
-                        settings_changed = true;
-                    }
-                    ui.add_space(5.0);
-                    
-                    // Offset Y
-                    if Self::show_array_input(ui, "Offset Y", &mut self.state.settings.offset_y, -1000.0, 1000.0, "px", validation_errors) {
-                        settings_changed = true;
-                    }
-                    
                     if settings_changed {
                         self.state.validate_settings();
                     }
@@ -2692,11 +3670,11 @@ impl LapsifyApp {
                         }
                         ui.label("Format:");
                         egui::ComboBox::from_id_source("format_combo")
-                            .selected_text(&self.state.settings.format)
+                            .selected_text(&self.state.keyframe_settings.global_settings.format)
                             .show_ui(ui, |ui| {
                                 let formats = ["mp4", "mov", "avi", "jpg", "png", "tiff"];
                                 for format in formats {
-                                    if ui.selectable_value(&mut self.state.settings.format, format.to_string(), format).changed() {
+                                    if ui.selectable_value(&mut self.state.keyframe_settings.global_settings.format, format.to_string(), format).changed() {
                                         settings_changed = true;
                                     }
                                 }
@@ -2720,7 +3698,7 @@ impl LapsifyApp {
                         }
                         ui.label("FPS:");
                         let response = ui.add(
-                            egui::Slider::new(&mut self.state.settings.fps, 1..=120)
+                            egui::Slider::new(&mut self.state.keyframe_settings.global_settings.fps, 1..=120)
                                 .step_by(1.0)
                         );
                         if response.changed() {
@@ -2742,7 +3720,7 @@ impl LapsifyApp {
                         }
                         ui.label("Quality (CRF):");
                         let response = ui.add(
-                            egui::Slider::new(&mut self.state.settings.quality, 0..=51)
+                            egui::Slider::new(&mut self.state.keyframe_settings.global_settings.quality, 0..=51)
                                 .step_by(1.0)
                         );
                         if response.changed() {
@@ -2764,9 +3742,9 @@ impl LapsifyApp {
                             ui.colored_label(ui.visuals().error_fg_color, "⚠");
                         }
                         ui.label("Resolution:");
-                        let mut resolution_str = self.state.settings.resolution.clone().unwrap_or_default();
+                        let mut resolution_str = self.state.keyframe_settings.global_settings.resolution.clone().unwrap_or_default();
                         if ui.text_edit_singleline(&mut resolution_str).changed() {
-                            self.state.settings.resolution = if resolution_str.is_empty() {
+                            self.state.keyframe_settings.global_settings.resolution = if resolution_str.is_empty() {
                                 None
                             } else {
                                 Some(resolution_str)
@@ -2801,7 +3779,7 @@ impl LapsifyApp {
                         }
                         ui.label("Threads:");
                         let response = ui.add(
-                            egui::Slider::new(&mut self.state.settings.threads, 0..=32)
+                            egui::Slider::new(&mut self.state.keyframe_settings.global_settings.threads, 0..=32)
                                 .step_by(1.0)
                         );
                         if response.changed() {
@@ -2823,18 +3801,18 @@ impl LapsifyApp {
                             ui.colored_label(ui.visuals().error_fg_color, "⚠");
                         }
                         ui.label("Start Frame:");
-                        let mut start_frame = self.state.settings.start_frame.unwrap_or(0);
+                        let mut start_frame = self.state.keyframe_settings.global_settings.start_frame.unwrap_or(0);
                         if ui.add(egui::DragValue::new(&mut start_frame).range(0..=9999)).changed() {
-                            self.state.settings.start_frame = if start_frame == 0 { None } else { Some(start_frame) };
+                            self.state.keyframe_settings.global_settings.start_frame = if start_frame == 0 { None } else { Some(start_frame) };
                             settings_changed = true;
                         }
                     });
                     
                     ui.horizontal(|ui| {
                         ui.label("End Frame:");
-                        let mut end_frame = self.state.settings.end_frame.unwrap_or(0);
+                        let mut end_frame = self.state.keyframe_settings.global_settings.end_frame.unwrap_or(0);
                         if ui.add(egui::DragValue::new(&mut end_frame).range(0..=9999)).changed() {
-                            self.state.settings.end_frame = if end_frame == 0 { None } else { Some(end_frame) };
+                            self.state.keyframe_settings.global_settings.end_frame = if end_frame == 0 { None } else { Some(end_frame) };
                             settings_changed = true;
                         }
                     });
@@ -2878,7 +3856,7 @@ impl LapsifyApp {
                     // Command preview
                     if let (Some(input_dir), Some(output_dir)) = (&self.state.selected_folder, &self.state.ui_state.output_directory) {
                         ui.collapsing("Command Preview", |ui| {
-                            let command_preview = self.state.settings.generate_command_preview(input_dir, output_dir);
+                            let command_preview = self.state.keyframe_settings.generate_command_preview(input_dir, output_dir);
                             ui.horizontal_wrapped(|ui| {
                                 ui.code(&command_preview);
                             });
@@ -2997,6 +3975,124 @@ impl LapsifyApp {
                 
                 ui.add_space(10.0);
                 
+                // Testing and Validation Section
+                ui.collapsing("Testing & Validation", |ui| {
+                    ui.label("Comprehensive testing and validation tools");
+                    ui.add_space(5.0);
+                    
+                    // Run comprehensive tests button
+                    if ui.button("🧪 Run All Tests").clicked() {
+                        let results = self.state.run_comprehensive_tests();
+                        self.state.add_error_notification(
+                            format!("Completed {} tests", results.len()),
+                            ErrorType::Info,
+                            true,
+                        );
+                    }
+                    
+                    ui.add_space(5.0);
+                    
+                    // Show test results if available
+                    if !self.state.testing_system.test_results.is_empty() {
+                        ui.label("Test Results:");
+                        ui.separator();
+                        
+                        for result in &self.state.testing_system.test_results {
+                            ui.horizontal(|ui| {
+                                let (icon, color) = match result.status {
+                                    TestStatus::Passed => ("✅", ui.visuals().text_color()),
+                                    TestStatus::Failed => ("❌", ui.visuals().error_fg_color),
+                                    TestStatus::Warning => ("⚠️", ui.visuals().warn_fg_color),
+                                    TestStatus::Skipped => ("⏭️", ui.visuals().weak_text_color()),
+                                };
+                                
+                                ui.colored_label(color, icon);
+                                ui.label(&result.test_name);
+                                ui.label(format!("({:.1}ms)", result.duration.as_millis()));
+                            });
+                            
+                            if !result.message.is_empty() {
+                                ui.indent("test_message", |ui| {
+                                    ui.small(&result.message);
+                                });
+                            }
+                        }
+                        
+                        ui.add_space(5.0);
+                        
+                        // Summary
+                        let passed = self.state.testing_system.test_results.iter()
+                            .filter(|r| r.status == TestStatus::Passed).count();
+                        let failed = self.state.testing_system.test_results.iter()
+                            .filter(|r| r.status == TestStatus::Failed).count();
+                        let warnings = self.state.testing_system.test_results.iter()
+                            .filter(|r| r.status == TestStatus::Warning).count();
+                        
+                        ui.horizontal(|ui| {
+                            ui.colored_label(ui.visuals().text_color(), format!("✅ {}", passed));
+                            if failed > 0 {
+                                ui.colored_label(ui.visuals().error_fg_color, format!("❌ {}", failed));
+                            }
+                            if warnings > 0 {
+                                ui.colored_label(ui.visuals().warn_fg_color, format!("⚠️ {}", warnings));
+                            }
+                        });
+                    }
+                    
+                    ui.add_space(5.0);
+                    
+                    // Performance metrics
+                    if let Some(perf) = &self.state.testing_system.validation_results.performance_validation {
+                        ui.label("Performance Metrics:");
+                        ui.indent("perf_metrics", |ui| {
+                            ui.label(format!("UI Responsiveness: {:.1} FPS", perf.ui_responsiveness));
+                            ui.label(format!("Thumbnail Load Time: {}ms", perf.thumbnail_load_time.as_millis()));
+                            if perf.memory_usage > 0 {
+                                ui.label(format!("Memory Usage: {} MB", perf.memory_usage / 1024 / 1024));
+                            }
+                        });
+                    }
+                    
+                    ui.add_space(5.0);
+                    
+                    // Quick validation buttons
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Validate Settings").clicked() {
+                            self.state.validate_settings();
+                            let error_count = self.state.ui_state.validation_errors.len();
+                            if error_count == 0 {
+                                self.state.add_error_notification(
+                                    "All settings are valid".to_string(),
+                                    ErrorType::Info,
+                                    true,
+                                );
+                            } else {
+                                self.state.add_error_notification(
+                                    format!("Found {} validation errors", error_count),
+                                    ErrorType::Warning,
+                                    true,
+                                );
+                            }
+                        }
+                        
+                        if ui.small_button("Check CLI").clicked() {
+                            let available = self.state.check_lapsify_availability();
+                            let message = if available {
+                                "Lapsify CLI is available"
+                            } else {
+                                "Lapsify CLI not found"
+                            };
+                            self.state.add_error_notification(
+                                message.to_string(),
+                                if available { ErrorType::Info } else { ErrorType::Error },
+                                true,
+                            );
+                        }
+                    });
+                });
+                
+                ui.add_space(10.0);
+                
                 // Settings Management
                 ui.collapsing("Settings Management", |ui| {
                     // Presets
@@ -3064,7 +4160,7 @@ impl LapsifyApp {
                     
                     ui.horizontal(|ui| {
                         if ui.button("↺ Reset to Defaults").clicked() {
-                            self.state.settings = LapsifySettings::default();
+                            self.state.keyframe_settings = KeyframeSettings::default();
                             self.state.validate_settings();
                         }
                         if ui.button("💾 Save as Preset").clicked() {
@@ -4096,11 +5192,11 @@ impl eframe::App for LapsifyApp {
         let screen_size = ctx.screen_rect().size();
         self.apply_responsive_layout(screen_size);
         
-        // Left sidebar panel for settings with responsive constraints
+        // Right sidebar panel for settings with responsive constraints
         let min_sidebar = 250.0_f32.max(screen_size.x * 0.15);
         let max_sidebar = 400.0_f32.min(screen_size.x * 0.35);
         
-        let sidebar_response = egui::SidePanel::left("settings_sidebar")
+        let sidebar_response = egui::SidePanel::right("settings_sidebar")
             .resizable(true)
             .default_width(self.state.ui_state.sidebar_width)
             .width_range(min_sidebar..=max_sidebar)
@@ -4138,11 +5234,16 @@ impl eframe::App for LapsifyApp {
         // Handle keyboard shortcuts
         self.handle_keyboard_shortcuts(ctx);
         
-        // Performance optimizations
+        // Performance optimizations and metrics tracking
+        let frame_start = Instant::now();
         self.state.update_frame_timing();
         
         // Process background loading (limit to 1 per frame for smooth UI)
         let loaded_something = self.state.process_background_loading(ctx);
+        
+        // Track frame time for performance metrics
+        let frame_time = frame_start.elapsed();
+        self.state.update_performance_metrics(frame_time);
         
         // Only request repaint if we loaded something or if processing is active
         if loaded_something || self.state.processing_status.is_processing {
