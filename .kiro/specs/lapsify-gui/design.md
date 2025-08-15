@@ -2,7 +2,7 @@
 
 ## Overview
 
-The lapsify-gui is a desktop application built with Rust and the eframe/egui framework that provides a graphical interface for the existing lapsify CLI tool. The application features a three-pane layout: a main image viewer, a settings sidebar, and a bottom carousel for image thumbnails. The design emphasizes usability, performance, and seamless integration with the existing lapsify functionality.
+The lapsify-gui is a desktop application built with Rust and the eframe/egui framework that provides a graphical interface for the existing lapsify CLI tool. The application features a three-pane layout: a main image viewer with folder selection controls, a right-side settings sidebar, and a bottom carousel for image thumbnails. The design emphasizes keyframe-based parameter animation, usability, performance, and seamless integration with the existing lapsify functionality.
 
 ## Architecture
 
@@ -12,16 +12,20 @@ The lapsify-gui is a desktop application built with Rust and the eframe/egui fra
 ┌─────────────────────────────────────────────────────────────┐
 │                    lapsify-gui Application                   │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │   Sidebar   │  │   Main Viewer   │  │    Carousel     │  │
-│  │  Settings   │  │     Pane        │  │     Pane        │  │
-│  │    Panel    │  │                 │  │                 │  │
-│  └─────────────┘  └─────────────────┘  └─────────────────┘  │
+│  ┌─────────────────────────────────┐  ┌─────────────────┐    │
+│  │         Main Viewer Pane        │  │   Right-Side    │    │
+│  │    (with folder selection)      │  │    Settings     │    │
+│  │                                 │  │     Sidebar     │    │
+│  ├─────────────────────────────────┤  │                 │    │
+│  │        Bottom Carousel          │  │                 │    │
+│  │         (Thumbnails)            │  │                 │    │
+│  └─────────────────────────────────┘  └─────────────────┘    │
 ├─────────────────────────────────────────────────────────────┤
 │                    Core Application Layer                   │
 │  ┌─────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │   Image     │  │    Settings     │  │   Processing    │  │
-│  │  Manager    │  │    Manager      │  │    Engine       │  │
+│  │   Image     │  │   Keyframe      │  │   Processing    │  │
+│  │  Manager    │  │   Settings      │  │    Engine       │  │
+│  │             │  │   Manager       │  │                 │  │
 │  └─────────────┘  └─────────────────┘  └─────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                     System Integration                      │
@@ -51,7 +55,7 @@ pub struct AppState {
     pub selected_folder: Option<PathBuf>,
     pub images: Vec<ImageInfo>,
     pub selected_image_index: Option<usize>,
-    pub settings: LapsifySettings,
+    pub keyframe_settings: KeyframeSettings,
     pub processing_status: ProcessingStatus,
     pub ui_state: UiState,
 }
@@ -64,28 +68,41 @@ pub struct ImageInfo {
 }
 ```
 
-### 2. Settings Manager (`LapsifySettings`)
+### 2. Keyframe Settings Manager (`KeyframeSettings`)
 
-Manages all lapsify CLI parameters with validation:
+Manages keyframe-based parameter animation with validation:
 
 ```rust
-pub struct LapsifySettings {
-    // Image adjustments
-    pub exposure: Vec<f32>,
-    pub brightness: Vec<f32>,
-    pub contrast: Vec<f32>,
-    pub saturation: Vec<f32>,
+pub struct KeyframeSettings {
+    pub num_keyframes: usize,        // 1-50, limited by image count
+    pub selected_keyframe: usize,    // Currently selected keyframe index
+    pub keyframe_data: Vec<KeyframeData>,
+    pub is_enabled: bool,            // Disabled until folder loaded
+}
+
+pub struct KeyframeData {
+    // Image adjustments (per keyframe)
+    pub exposure: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub saturation: f32,
     
-    // Crop and positioning
-    pub crop: Option<String>,
-    pub offset_x: Vec<f32>,
-    pub offset_y: Vec<f32>,
+    // Crop and positioning (per keyframe)
+    pub offset_x: f32,
+    pub offset_y: f32,
     
-    // Output settings
+    // Other per-keyframe parameters
+    pub zoom: f32,
+    pub rotation: f32,
+}
+
+pub struct GlobalSettings {
+    // Output settings (not keyframe-specific)
     pub format: String,
     pub fps: u32,
     pub quality: u32,
     pub resolution: Option<String>,
+    pub crop: Option<String>,
     
     // Processing settings
     pub threads: usize,
@@ -114,13 +131,18 @@ impl ImageManager {
 
 ### 4. UI Components
 
-#### Sidebar Panel (`SidebarPanel`)
-- Settings input widgets for all lapsify parameters
+#### Right Sidebar Panel (`RightSidebarPanel`)
+- Positioned on the right side of the application
+- Disabled state when no folder is loaded
+- Keyframe controls at the top:
+  - "Number of keyframes" slider (1-50, limited by image count)
+  - "Selected keyframe" selector
+- Parameter input widgets for the currently selected keyframe
 - Real-time validation and error display
-- Preset management for common configurations
-- Export/import settings functionality
+- No folder selection controls (moved to main panel)
 
 #### Main Viewer Panel (`MainViewerPanel`)
+- Folder selection controls (moved from sidebar)
 - Image display with zoom and pan capabilities
 - Fit-to-window and actual-size viewing modes
 - Image metadata display
@@ -145,7 +167,8 @@ pub struct ProcessingEngine {
 pub struct ProcessingJob {
     pub input_folder: PathBuf,
     pub output_folder: PathBuf,
-    pub settings: LapsifySettings,
+    pub keyframe_settings: KeyframeSettings,
+    pub global_settings: GlobalSettings,
     pub status: JobStatus,
 }
 ```
@@ -166,24 +189,41 @@ graph TD
     H --> I[Display in Main Pane]
 ```
 
-### Settings Data Model
+### Keyframe Settings Data Model
 
-The settings model mirrors the lapsify CLI arguments structure:
+The keyframe-based settings model supports parameter animation:
 
-- **Value Arrays**: Support for single values or comma-separated arrays for animation
-- **Validation**: Real-time validation with visual feedback
-- **Persistence**: Save/load settings to/from JSON files
-- **Presets**: Common configurations for quick access
+- **Keyframe Arrays**: Each parameter has values for each keyframe, interpolated by lapsify CLI
+- **CLI Format**: Arrays passed with '=' syntax (e.g., --exposure=-2,1.2,4)
+- **Selected Keyframe**: UI shows/edits values for currently selected keyframe
+- **Validation**: Real-time validation with visual feedback per keyframe
+- **State Management**: Settings disabled until folder loaded
+- **Persistence**: Save/load keyframe configurations to/from JSON files
 
 ### Processing Pipeline
 
 ```mermaid
 graph LR
-    A[UI Settings] --> B[Validate Parameters]
-    B --> C[Generate CLI Command]
-    C --> D[Execute lapsify CLI]
-    D --> E[Monitor Progress]
-    E --> F[Display Results]
+    A[Keyframe Settings] --> B[Validate Parameters]
+    B --> C[Build Parameter Arrays]
+    C --> D[Generate CLI Command with = syntax]
+    D --> E[Execute lapsify CLI]
+    E --> F[Monitor Progress]
+    F --> G[Display Results]
+```
+
+### Keyframe Management Flow
+
+```mermaid
+graph TD
+    A[Load Folder] --> B[Enable Settings Sidebar]
+    B --> C[Set Max Keyframes = min(50, image_count)]
+    C --> D[Initialize Keyframe Data]
+    D --> E[User Selects Keyframe]
+    E --> F[Update UI with Keyframe Values]
+    F --> G[User Modifies Parameters]
+    G --> H[Store Values for Selected Keyframe]
+    H --> I[Generate Arrays for CLI]
 ```
 
 ## Error Handling
