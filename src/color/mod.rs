@@ -65,8 +65,19 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 impl<'a> ColorParams<'a> {
     pub fn at_frame(project: &'a Project, frame: u32) -> Self {
         let color = &project.color;
+
+        // Effective exposure is the sum of independent layers: the
+        // user-keyframed curve plus machine-generated compensation. Each
+        // layer is bookkept separately so analyses stay re-runnable.
+        let mut exposure = color.exposure.sample(frame);
+        if let Some(ref analysis) = project.analysis {
+            if let Some(ref hg) = analysis.holy_grail {
+                exposure += hg.effective(frame as usize);
+            }
+        }
+
         Self {
-            exposure: color.exposure.sample(frame),
+            exposure,
             temperature: color.temperature.sample(frame),
             tint: color.tint.sample(frame),
             brightness: color.brightness.sample(frame),

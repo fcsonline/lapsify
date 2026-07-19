@@ -6,7 +6,10 @@
 //! analysis command overwrites its layer wholesale (idempotent by
 //! construction).
 
+pub mod holygrail;
 pub mod luminance;
+
+pub use holygrail::HolyGrailLayer;
 
 use std::path::PathBuf;
 
@@ -26,6 +29,12 @@ pub struct Analysis {
     /// Mean linear luminance of the DEVELOPED frames (all grading applied).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub developed_luminance: Option<LumaSeries>,
+    /// Exposure compensation for in-camera exposure changes, from EXIF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holy_grail: Option<HolyGrailLayer>,
+    /// Capture timestamps in unix epoch milliseconds, one per frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_times_ms: Option<Vec<i64>>,
 }
 
 /// A per-frame scalar luminance series.

@@ -4,6 +4,7 @@ pub mod color;
 pub mod crop;
 pub mod curve;
 pub mod error;
+pub mod exif;
 pub mod export;
 pub mod progress;
 pub mod project;

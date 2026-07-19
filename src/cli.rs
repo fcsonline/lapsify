@@ -88,6 +88,32 @@ fn build_command() -> Command {
                         .num_args(0)
                         .help("Compute and emit events without writing the result into the project file"),
                 ),
+            )
+            .subcommand(
+                render_args(Command::new("holygrail").about(
+                    "Compute exposure compensation for in-camera exposure changes from EXIF",
+                ))
+                .arg(
+                    Arg::new("rotate")
+                        .allow_hyphen_values(true)
+                        .long("rotate")
+                        .value_name("EV")
+                        .help("Linear baseline tilt over the clip, in EV. Default: auto-fit so the compensation ends at 0"),
+                )
+                .arg(
+                    Arg::new("stretch")
+                        .allow_hyphen_values(true)
+                        .long("stretch")
+                        .value_name("FACTOR")
+                        .help("Scale of the whole compensation")
+                        .default_value("1.0"),
+                )
+                .arg(
+                    Arg::new("no-write")
+                        .long("no-write")
+                        .num_args(0)
+                        .help("Compute and emit events without writing the result into the project file"),
+                ),
             ),
     )
 }
@@ -307,6 +333,12 @@ fn render_args(cmd: Command) -> Command {
                 .help("X offset for crop window in pixels. Single value or comma-separated array. Examples: '10' (static), '0,20,0,-20' (panning), '0,5,-5,0' (stabilization)"),
         )
         .arg(
+            Arg::new("no-holy-grail")
+                .long("no-holy-grail")
+                .num_args(0)
+                .help("Ignore the holy-grail exposure compensation layer for this run (A/B comparison)"),
+        )
+        .arg(
             Arg::new("offset-y")
                 .allow_hyphen_values(true)
                 .long("offset-y")
@@ -322,6 +354,16 @@ fn is_explicit(matches: &ArgMatches, name: &str) -> bool {
 /// Build the project from a project file (if given) with CLI flag overrides,
 /// or purely from CLI flags.
 fn build_project(matches: &ArgMatches) -> Result<Project> {
+    let mut project = build_project_inner(matches)?;
+    if matches.get_flag("no-holy-grail") {
+        if let Some(ref mut analysis) = project.analysis {
+            analysis.holy_grail = None;
+        }
+    }
+    Ok(project)
+}
+
+fn build_project_inner(matches: &ArgMatches) -> Result<Project> {
     let from_file = matches.get_one::<String>("project").is_some();
 
     let mut project = match matches.get_one::<String>("project") {
@@ -524,6 +566,7 @@ pub fn run() -> Result<()> {
         },
         Some(("analyze", sub)) => match sub.subcommand() {
             Some(("luminance", lum)) => run_analyze_luminance(lum),
+            Some(("holygrail", hg)) => run_analyze_holygrail(hg),
             _ => unreachable!("subcommand_required"),
         },
         Some(_) => unreachable!("unknown subcommand"),
@@ -581,6 +624,80 @@ fn run_analyze_luminance(matches: &ArgMatches) -> Result<()> {
                 analysis.developed_luminance = Some(series);
             } else {
                 analysis.source_luminance = Some(series);
+            }
+            project.save_atomic(path)?;
+            path.clone()
+        }
+        _ => {
+            if project_path.is_none() {
+                reporter.report(ProgressEvent::Warning {
+                    message: "no project file given; results were not persisted (use --project)"
+                        .to_string(),
+                });
+            }
+            PathBuf::new()
+        }
+    };
+
+    reporter.report(ProgressEvent::Done {
+        output: written,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
+fn run_analyze_holygrail(matches: &ArgMatches) -> Result<()> {
+    use crate::analysis::holygrail::{compute_holy_grail, HolyGrailOptions};
+    use crate::analysis::Analysis;
+    use crate::progress::ProgressEvent;
+
+    let mut project = build_project(matches)?;
+    project.validate()?;
+
+    let opts = HolyGrailOptions {
+        rotate: matches
+            .get_one::<String>("rotate")
+            .map(|s| s.parse::<f32>())
+            .transpose()
+            .map_err(|_| LapsifyError::message("Invalid rotate value"))?,
+        stretch: matches
+            .get_one::<String>("stretch")
+            .map(|s| s.parse::<f32>())
+            .transpose()
+            .map_err(|_| LapsifyError::message("Invalid stretch value"))?,
+    };
+
+    let reporter = match matches.get_one::<String>("progress").unwrap().as_str() {
+        "json" => ProgressReporter::json(),
+        _ => ProgressReporter::human(),
+    };
+
+    let image_files = list_images(&project.input)?;
+    reporter.report(ProgressEvent::Start {
+        total_frames: image_files.len(),
+        width: 0,
+        height: 0,
+    });
+
+    let start = Instant::now();
+    let (layer, capture_times) = compute_holy_grail(&image_files, &opts, &reporter)?;
+
+    if !layer.frames_missing_exif.is_empty() {
+        reporter.report(ProgressEvent::Warning {
+            message: format!(
+                "{} frame(s) had no usable EXIF exposure data; their compensation was carried forward",
+                layer.frames_missing_exif.len()
+            ),
+        });
+    }
+
+    let project_path = matches.get_one::<String>("project").map(PathBuf::from);
+    let written = match (&project_path, matches.get_flag("no-write")) {
+        (Some(path), false) => {
+            let analysis = project.analysis.get_or_insert_with(Analysis::default);
+            analysis.holy_grail = Some(layer);
+            if capture_times.is_some() {
+                analysis.capture_times_ms = capture_times;
             }
             project.save_atomic(path)?;
             path.clone()
