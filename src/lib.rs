@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod color;
 pub mod crop;
 pub mod curve;
 pub mod error;

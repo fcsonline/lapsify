@@ -2,32 +2,12 @@ use std::path::Path;
 
 use image::{imageops, DynamicImage, RgbImage};
 
+use crate::color::{ColorParams, FrameColorOps};
 use crate::error::{LapsifyError, Result};
 use crate::project::Project;
 
-/// Adjustment values resolved for a single frame.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FrameParams {
-    pub exposure: f32,
-    pub brightness: f32,
-    pub contrast: f32,
-    pub saturation: f32,
-}
-
-impl FrameParams {
-    pub fn at_frame(project: &Project, frame: u32) -> Self {
-        let color = &project.color;
-        Self {
-            exposure: color.exposure.sample(frame),
-            brightness: color.brightness.sample(frame),
-            contrast: color.contrast.sample(frame),
-            saturation: color.saturation.sample(frame),
-        }
-    }
-}
-
 pub fn render_frame(img: DynamicImage, project: &Project, frame: u32) -> Result<DynamicImage> {
-    let params = FrameParams::at_frame(project, frame);
+    let params = ColorParams::at_frame(project, frame);
     let rgb_img = img.into_rgb8();
     let (width, height) = rgb_img.dimensions();
 
@@ -40,62 +20,9 @@ pub fn render_frame(img: DynamicImage, project: &Project, frame: u32) -> Result<
         None => rgb_img,
     };
 
-    apply_color(&mut out, &params);
+    FrameColorOps::from_params(&params).apply(&mut out);
 
     Ok(DynamicImage::ImageRgb8(out))
-}
-
-fn apply_color(img: &mut RgbImage, params: &FrameParams) {
-    let identity = params.exposure == 0.0
-        && params.brightness == 0.0
-        && params.contrast == 1.0
-        && params.saturation == 1.0;
-    if identity {
-        return;
-    }
-
-    let exposure_multiplier = 2.0_f32.powf(params.exposure);
-    let brightness_adjust = params.brightness / 100.0;
-
-    for pixel in img.pixels_mut() {
-        let [r, g, b] = pixel.0;
-
-        let mut rf = r as f32 / 255.0;
-        let mut gf = g as f32 / 255.0;
-        let mut bf = b as f32 / 255.0;
-
-        // Apply exposure (2^stops multiplier)
-        if params.exposure != 0.0 {
-            rf *= exposure_multiplier;
-            gf *= exposure_multiplier;
-            bf *= exposure_multiplier;
-        }
-
-        if params.brightness != 0.0 {
-            rf += brightness_adjust;
-            gf += brightness_adjust;
-            bf += brightness_adjust;
-        }
-
-        if params.contrast != 1.0 {
-            rf = (rf - 0.5) * params.contrast + 0.5;
-            gf = (gf - 0.5) * params.contrast + 0.5;
-            bf = (bf - 0.5) * params.contrast + 0.5;
-        }
-
-        if params.saturation != 1.0 {
-            let gray = 0.299 * rf + 0.587 * gf + 0.114 * bf;
-            rf = gray + (rf - gray) * params.saturation;
-            gf = gray + (gf - gray) * params.saturation;
-            bf = gray + (bf - gray) * params.saturation;
-        }
-
-        pixel.0 = [
-            (rf.clamp(0.0, 1.0) * 255.0) as u8,
-            (gf.clamp(0.0, 1.0) * 255.0) as u8,
-            (bf.clamp(0.0, 1.0) * 255.0) as u8,
-        ];
-    }
 }
 
 pub fn generate_output_filename(input_path: &Path, output_format: &str) -> String {
@@ -187,12 +114,21 @@ mod tests {
     }
 
     #[test]
-    fn exposure_one_stop_brightens() {
-        let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(2, 2, Rgb([64, 64, 64])));
+    fn exposure_one_stop_doubles_linear_light() {
+        use crate::color::transfer::srgb_to_linear;
+
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(2, 2, Rgb([100, 100, 100])));
         let mut project = test_project();
         project.color.exposure = Curve::Constant(1.0);
         let out = render_frame(img, &project, 0).unwrap().to_rgb8();
-        assert_eq!(out.get_pixel(0, 0).0, [128, 128, 128]);
+
+        let linear_in = srgb_to_linear(100.0 / 255.0);
+        let linear_out = srgb_to_linear(out.get_pixel(0, 0).0[0] as f32 / 255.0);
+        assert!(
+            (linear_out - 2.0 * linear_in).abs() < 0.01,
+            "expected doubled linear light, got {linear_out} vs {}",
+            2.0 * linear_in
+        );
     }
 
     #[test]
@@ -205,7 +141,10 @@ mod tests {
         let at_start = render_frame(img.clone(), &project, 0).unwrap().to_rgb8();
         let at_end = render_frame(img, &project, 10).unwrap().to_rgb8();
         assert_eq!(at_start.get_pixel(0, 0).0, [64, 64, 64]);
-        assert_eq!(at_end.get_pixel(0, 0).0, [128, 128, 128]);
+        assert!(
+            at_end.get_pixel(0, 0).0[0] > 80,
+            "frame 10 should be brighter"
+        );
     }
 
     #[test]
