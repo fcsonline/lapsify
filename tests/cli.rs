@@ -199,6 +199,91 @@ fn encodes_mp4_via_ffmpeg_pipe() {
 }
 
 #[test]
+fn render_subcommand_matches_legacy_invocation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("frames");
+    write_frames(&input, 3);
+
+    let out_legacy = tmp.path().join("out_legacy");
+    lapsify()
+        .args(["-i", input.to_str().unwrap()])
+        .args(["-o", out_legacy.to_str().unwrap()])
+        .args(["-f", "png", "-e", "0.5"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("deprecated"));
+
+    let out_sub = tmp.path().join("out_sub");
+    lapsify()
+        .arg("render")
+        .args(["-i", input.to_str().unwrap()])
+        .args(["-o", out_sub.to_str().unwrap()])
+        .args(["-f", "png", "-e", "0.5"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("deprecated").not());
+
+    for i in 0..3 {
+        let name = format!("frame_{i:03}_processed.png");
+        assert_eq!(
+            fs::read(out_legacy.join(&name)).unwrap(),
+            fs::read(out_sub.join(&name)).unwrap()
+        );
+    }
+}
+
+#[test]
+fn preview_renders_one_downscaled_frame() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("frames");
+    write_frames(&input, 3);
+    let out = tmp.path().join("preview.png");
+
+    lapsify()
+        .arg("preview")
+        .args(["-i", input.to_str().unwrap()])
+        .args(["--frame", "1", "--max-dim", "32"])
+        .args(["--out", out.to_str().unwrap()])
+        .args(["-e", "1.0"])
+        .assert()
+        .success();
+
+    let img = image::open(&out).unwrap();
+    assert!(img.width() <= 32 && img.height() <= 32);
+
+    // Out-of-range frame errors cleanly.
+    lapsify()
+        .arg("preview")
+        .args(["-i", input.to_str().unwrap()])
+        .args(["--frame", "99"])
+        .args(["--out", tmp.path().join("x.png").to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("out of range"));
+}
+
+#[test]
+fn project_dump_prints_valid_project_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("frames");
+    write_frames(&input, 4);
+
+    let assert = lapsify()
+        .args(["project", "dump"])
+        .args(["-i", input.to_str().unwrap()])
+        .args(["-e", "-0.5,0.5", "-f", "png"])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["version"], 1);
+    // The legacy array became keyframes anchored to the sequence.
+    assert_eq!(value["color"]["exposure"][0]["frame"], 0);
+    assert_eq!(value["color"]["exposure"][1]["frame"], 3);
+}
+
+#[test]
 fn keyframed_crop_video_encodes_fixed_size() {
     if !ffmpeg_available() {
         eprintln!("skipping: ffmpeg not available");

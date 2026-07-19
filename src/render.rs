@@ -25,6 +25,27 @@ pub fn render_frame(img: DynamicImage, project: &Project, frame: u32) -> Result<
     Ok(DynamicImage::ImageRgb8(out))
 }
 
+/// Render a single frame for preview. With `max_dim`, the source is
+/// downscaled before the pipeline runs — the crop track is in normalized
+/// coordinates, so it applies identically at any scale.
+pub fn render_preview(project: &Project, frame: u32, max_dim: Option<u32>) -> Result<DynamicImage> {
+    let files = crate::source::list_images(&project.input)?;
+    let path = files.get(frame as usize).ok_or_else(|| {
+        LapsifyError::message(format!(
+            "Frame {frame} is out of range (0-{})",
+            files.len().saturating_sub(1)
+        ))
+    })?;
+
+    let mut img = image::open(path)?;
+    if let Some(dim) = max_dim {
+        if img.width() > dim || img.height() > dim {
+            img = img.thumbnail(dim, dim);
+        }
+    }
+    render_frame(img, project, frame)
+}
+
 pub fn generate_output_filename(input_path: &Path, output_format: &str) -> String {
     let stem = input_path.file_stem().unwrap().to_str().unwrap();
     format!("{stem}_processed.{output_format}")

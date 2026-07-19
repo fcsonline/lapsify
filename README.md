@@ -50,14 +50,23 @@ cargo build --release
 
 ```bash
 # Process images to video
-lapsify -i /path/to/images -o /path/to/output -f mp4
+lapsify render -i /path/to/images -o /path/to/output -f mp4
 
 # Process images to processed images
-lapsify -i /path/to/images -o /path/to/output -f jpg
+lapsify render -i /path/to/images -o /path/to/output -f jpg
 
 # Render from a project file
-lapsify --project project.json
+lapsify render --project project.json
+
+# Render a single frame quickly (e.g. for a UI preview)
+lapsify preview --project project.json --frame 42 --max-dim 1280 --out preview.png
+
+# Print the project JSON equivalent to a set of flags
+lapsify project dump -i frames/ -e "-1,1" -f mp4
 ```
+
+Running without a subcommand still works (equivalent to `render`) but is
+deprecated.
 
 ### Command Line Options
 

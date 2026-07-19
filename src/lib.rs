@@ -13,4 +13,4 @@ pub use crop::{CropRect, CropTrack};
 pub use curve::{Curve, Easing, Keyframe};
 pub use error::LapsifyError;
 pub use project::{ColorGrade, ExportSettings, Project};
-pub use render::render_frame;
+pub use render::{render_frame, render_preview};

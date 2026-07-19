@@ -15,9 +15,51 @@ use crate::project::{Codec, ColorGrade, ExportSettings, Project, PROJECT_VERSION
 use crate::source::{list_images, scan_dimensions};
 
 fn build_command() -> Command {
-    Command::new("lapsify")
-        .version(env!("CARGO_PKG_VERSION"))
-        .about("Process time-lapse images with keyframable adjustments")
+    render_args(
+        Command::new("lapsify")
+            .version(env!("CARGO_PKG_VERSION"))
+            .about("Process time-lapse images with keyframable adjustments"),
+    )
+    .subcommand(render_args(Command::new("render").about(
+        "Render the full sequence to video or processed images",
+    )))
+    .subcommand(
+        render_args(Command::new("preview").about("Render a single frame for inspection"))
+            .arg(
+                Arg::new("frame")
+                    .long("frame")
+                    .value_name("INDEX")
+                    .help("Frame index to preview (0-based)")
+                    .required(true),
+            )
+            .arg(
+                Arg::new("max-dim")
+                    .long("max-dim")
+                    .value_name("PIXELS")
+                    .help("Downscale the source so its longest edge fits this size before processing (faster previews)"),
+            )
+            .arg(
+                Arg::new("out")
+                    .long("out")
+                    .value_name("FILE")
+                    .help("Output image file")
+                    .default_value("preview.png"),
+            ),
+    )
+    .subcommand(
+        Command::new("project")
+            .about("Project file utilities")
+            .subcommand_required(true)
+            .subcommand(render_args(Command::new("dump").about(
+                "Print the project JSON that the given flags produce",
+            ))),
+    )
+}
+
+/// The shared flag set accepted at the top level (legacy), by `render`, by
+/// `preview` and by `project dump`.
+fn render_args(cmd: Command) -> Command {
+    cmd
         .arg(
             Arg::new("project")
                 .short('p')
@@ -30,16 +72,14 @@ fn build_command() -> Command {
                 .short('i')
                 .long("input")
                 .value_name("DIR")
-                .help("Input directory containing images")
-                .required_unless_present("project"),
+                .help("Input directory containing images"),
         )
         .arg(
             Arg::new("output")
                 .short('o')
                 .long("output")
                 .value_name("DIR")
-                .help("Output directory for processed images")
-                .required_unless_present("project"),
+                .help("Output directory for processed images"),
         )
         .arg(
             Arg::new("exposure")
@@ -187,16 +227,27 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
 
     let mut project = match matches.get_one::<String>("project") {
         Some(path) => Project::from_json_file(Path::new(path))?,
-        None => Project {
-            version: PROJECT_VERSION,
-            input: PathBuf::from(matches.get_one::<String>("input").unwrap()),
-            frame_range: None,
-            color: ColorGrade::default(),
-            crop: None,
-            export: ExportSettings::new(PathBuf::from(
-                matches.get_one::<String>("output").unwrap(),
-            )),
-        },
+        None => {
+            let input = matches.get_one::<String>("input").ok_or_else(|| {
+                LapsifyError::message(
+                    "An input directory is required (-i <DIR> or --project <FILE>)",
+                )
+            })?;
+            // Commands that write into a directory (render) validate the
+            // output separately; preview and dump don't need one.
+            let output = matches
+                .get_one::<String>("output")
+                .map(String::as_str)
+                .unwrap_or(".");
+            Project {
+                version: PROJECT_VERSION,
+                input: PathBuf::from(input),
+                frame_range: None,
+                color: ColorGrade::default(),
+                crop: None,
+                export: ExportSettings::new(PathBuf::from(output)),
+            }
+        }
     };
 
     // A flag overrides the project file only when passed explicitly; without
@@ -343,6 +394,53 @@ fn print_curve(name: &str, curve: &Curve, unit: &str) {
 pub fn run() -> Result<()> {
     let matches = build_command().get_matches();
 
+    match matches.subcommand() {
+        Some(("render", sub)) => run_render(sub),
+        Some(("preview", sub)) => run_preview(sub),
+        Some(("project", sub)) => match sub.subcommand() {
+            Some(("dump", dump)) => run_project_dump(dump),
+            _ => unreachable!("subcommand_required"),
+        },
+        Some(_) => unreachable!("unknown subcommand"),
+        None => {
+            eprintln!(
+                "note: running lapsify without a subcommand is deprecated; use `lapsify render`"
+            );
+            run_render(&matches)
+        }
+    }
+}
+
+fn run_project_dump(matches: &ArgMatches) -> Result<()> {
+    let project = build_project(matches)?;
+    project.validate()?;
+    println!("{}", project.to_json_pretty()?);
+    Ok(())
+}
+
+fn run_preview(matches: &ArgMatches) -> Result<()> {
+    let project = build_project(matches)?;
+    project.validate()?;
+
+    let frame = matches
+        .get_one::<String>("frame")
+        .unwrap()
+        .parse::<u32>()
+        .map_err(|_| LapsifyError::message("Invalid frame value"))?;
+    let max_dim = matches
+        .get_one::<String>("max-dim")
+        .map(|s| s.parse::<u32>())
+        .transpose()
+        .map_err(|_| LapsifyError::message("Invalid max-dim value"))?;
+    let out = PathBuf::from(matches.get_one::<String>("out").unwrap());
+
+    let preview = crate::render::render_preview(&project, frame, max_dim)?;
+    preview.save(&out)?;
+    eprintln!("Preview of frame {frame} written to {}", out.display());
+    Ok(())
+}
+
+fn run_render(matches: &ArgMatches) -> Result<()> {
     let threads = matches
         .get_one::<String>("threads")
         .unwrap()
@@ -356,7 +454,15 @@ pub fn run() -> Result<()> {
             .map_err(|e| LapsifyError::message(format!("Failed to configure thread pool: {e}")))?;
     }
 
-    let project = build_project(&matches)?;
+    if matches.get_one::<String>("project").is_none()
+        && matches.get_one::<String>("output").is_none()
+    {
+        return Err(LapsifyError::message(
+            "An output directory is required (-o <DIR> or --project <FILE>)",
+        ));
+    }
+
+    let project = build_project(matches)?;
     project.validate()?;
 
     // Scan every frame's header up front: catches mixed frame sizes before
