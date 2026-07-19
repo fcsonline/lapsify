@@ -1,8 +1,7 @@
 use std::path::Path;
 
-use image::{DynamicImage, ImageBuffer, Rgb};
+use image::{imageops, DynamicImage, RgbImage};
 
-use crate::crop::{parse_crop_string, resolve_crop};
 use crate::error::{LapsifyError, Result};
 use crate::project::Project;
 
@@ -13,57 +12,52 @@ pub struct FrameParams {
     pub brightness: f32,
     pub contrast: f32,
     pub saturation: f32,
-    pub offset_x: f32,
-    pub offset_y: f32,
 }
 
 impl FrameParams {
     pub fn at_frame(project: &Project, frame: u32) -> Self {
         let color = &project.color;
-        let (offset_x, offset_y) = match &project.crop {
-            Some(crop) => (crop.offset_x.sample(frame), crop.offset_y.sample(frame)),
-            None => (0.0, 0.0),
-        };
         Self {
             exposure: color.exposure.sample(frame),
             brightness: color.brightness.sample(frame),
             contrast: color.contrast.sample(frame),
             saturation: color.saturation.sample(frame),
-            offset_x,
-            offset_y,
         }
     }
 }
 
 pub fn render_frame(img: DynamicImage, project: &Project, frame: u32) -> Result<DynamicImage> {
     let params = FrameParams::at_frame(project, frame);
-    let rgb_img = img.to_rgb8();
+    let rgb_img = img.into_rgb8();
     let (width, height) = rgb_img.dimensions();
 
-    let (start_x, start_y, end_x, end_y) = if let Some(ref crop) = project.crop {
-        let crop_params = parse_crop_string(&crop.window)?;
-        let resolved = resolve_crop(&crop_params, width, height);
-
-        let start_x = (resolved.x + params.offset_x) as u32;
-        let start_y = (resolved.y + params.offset_y) as u32;
-        let end_x = (start_x + resolved.width as u32).min(width);
-        let end_y = (start_y + resolved.height as u32).min(height);
-
-        (start_x, start_y, end_x, end_y)
-    } else {
-        (0, 0, width, height)
+    // Crop first so color work only touches pixels that survive.
+    let mut out: RgbImage = match &project.crop {
+        Some(track) => {
+            let (x, y, w, h) = track.pixel_rect(frame, width, height)?;
+            imageops::crop_imm(&rgb_img, x, y, w, h).to_image()
+        }
+        None => rgb_img,
     };
 
-    let new_width = end_x - start_x;
-    let new_height = end_y - start_y;
+    apply_color(&mut out, &params);
 
-    let mut new_img = ImageBuffer::new(new_width, new_height);
+    Ok(DynamicImage::ImageRgb8(out))
+}
 
-    for (x, y, pixel) in rgb_img.enumerate_pixels() {
-        if x < start_x || x >= end_x || y < start_y || y >= end_y {
-            continue;
-        }
+fn apply_color(img: &mut RgbImage, params: &FrameParams) {
+    let identity = params.exposure == 0.0
+        && params.brightness == 0.0
+        && params.contrast == 1.0
+        && params.saturation == 1.0;
+    if identity {
+        return;
+    }
 
+    let exposure_multiplier = 2.0_f32.powf(params.exposure);
+    let brightness_adjust = params.brightness / 100.0;
+
+    for pixel in img.pixels_mut() {
         let [r, g, b] = pixel.0;
 
         let mut rf = r as f32 / 255.0;
@@ -72,14 +66,12 @@ pub fn render_frame(img: DynamicImage, project: &Project, frame: u32) -> Result<
 
         // Apply exposure (2^stops multiplier)
         if params.exposure != 0.0 {
-            let exposure_multiplier = 2.0_f32.powf(params.exposure);
             rf *= exposure_multiplier;
             gf *= exposure_multiplier;
             bf *= exposure_multiplier;
         }
 
         if params.brightness != 0.0 {
-            let brightness_adjust = params.brightness / 100.0;
             rf += brightness_adjust;
             gf += brightness_adjust;
             bf += brightness_adjust;
@@ -98,16 +90,12 @@ pub fn render_frame(img: DynamicImage, project: &Project, frame: u32) -> Result<
             bf = gray + (bf - gray) * params.saturation;
         }
 
-        let new_r = (rf.clamp(0.0, 1.0) * 255.0) as u8;
-        let new_g = (gf.clamp(0.0, 1.0) * 255.0) as u8;
-        let new_b = (bf.clamp(0.0, 1.0) * 255.0) as u8;
-
-        let new_x = x - start_x;
-        let new_y = y - start_y;
-        new_img.put_pixel(new_x, new_y, Rgb([new_r, new_g, new_b]));
+        pixel.0 = [
+            (rf.clamp(0.0, 1.0) * 255.0) as u8,
+            (gf.clamp(0.0, 1.0) * 255.0) as u8,
+            (bf.clamp(0.0, 1.0) * 255.0) as u8,
+        ];
     }
-
-    Ok(DynamicImage::ImageRgb8(new_img))
 }
 
 pub fn generate_output_filename(input_path: &Path, output_format: &str) -> String {
@@ -150,8 +138,10 @@ pub fn save_image(img: &DynamicImage, output_path: &Path, format: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crop::{CropRect, CropTrack};
     use crate::curve::{Curve, Keyframe};
-    use crate::project::{ColorGrade, CropSettings, ExportSettings, Project, PROJECT_VERSION};
+    use crate::project::{ColorGrade, ExportSettings, Project, PROJECT_VERSION};
+    use image::{ImageBuffer, Rgb};
     use std::path::PathBuf;
 
     fn test_project() -> Project {
@@ -222,12 +212,39 @@ mod tests {
     fn crop_reduces_dimensions() {
         let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(200, 200, Rgb([10, 20, 30])));
         let mut project = test_project();
-        project.crop = Some(CropSettings {
-            window: "120:110:10:20".to_string(),
-            offset_x: Curve::Constant(0.0),
-            offset_y: Curve::Constant(0.0),
-        });
+        project.crop = Some(CropTrack::from_rect(CropRect {
+            x: 0.05,
+            y: 0.10,
+            width: 0.60,
+            height: 0.55,
+        }));
         let out = render_frame(img, &project, 0).unwrap();
         assert_eq!(out.to_rgb8().dimensions(), (120, 110));
+    }
+
+    #[test]
+    fn keyframed_crop_pans_across_frames() {
+        // 100x100 image, 50x50 window panning from left to right.
+        let mut img = ImageBuffer::from_pixel(100, 100, Rgb([0u8, 0, 0]));
+        for x in 50..100 {
+            for y in 0..100 {
+                img.put_pixel(x, y, Rgb([255, 255, 255]));
+            }
+        }
+        let img = DynamicImage::ImageRgb8(img);
+
+        let mut project = test_project();
+        project.crop = Some(CropTrack {
+            x: Curve::Keyframed(vec![Keyframe::new(0, 0.0), Keyframe::new(10, 0.5)]),
+            y: Curve::Constant(0.0),
+            width: Curve::Constant(0.5),
+            height: Curve::Constant(0.5),
+        });
+
+        let left = render_frame(img.clone(), &project, 0).unwrap().to_rgb8();
+        let right = render_frame(img, &project, 10).unwrap().to_rgb8();
+        assert_eq!(left.dimensions(), (50, 50));
+        assert_eq!(left.get_pixel(0, 0).0, [0, 0, 0]);
+        assert_eq!(right.get_pixel(0, 0).0, [255, 255, 255]);
     }
 }

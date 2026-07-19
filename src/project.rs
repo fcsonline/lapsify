@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::crop::CropTrack;
 use crate::curve::Curve;
 use crate::error::{LapsifyError, Result};
 
@@ -20,8 +21,9 @@ pub struct Project {
     pub frame_range: Option<(usize, usize)>,
     #[serde(default)]
     pub color: ColorGrade,
+    /// Crop window over time in normalized source-image coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub crop: Option<CropSettings>,
+    pub crop: Option<CropTrack>,
     pub export: ExportSettings,
 }
 
@@ -47,22 +49,6 @@ impl Default for ColorGrade {
             saturation: Curve::Constant(1.0),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CropSettings {
-    /// Crop window in "width:height:x:y" format (pixels or percentages).
-    pub window: String,
-    /// X offset of the crop window in pixels over time.
-    #[serde(default = "zero_curve")]
-    pub offset_x: Curve,
-    /// Y offset of the crop window in pixels over time.
-    #[serde(default = "zero_curve")]
-    pub offset_y: Curve,
-}
-
-fn zero_curve() -> Curve {
-    Curve::Constant(0.0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,8 +124,7 @@ impl Project {
             .validate_range("saturation", 0.0, 2.0)?;
 
         if let Some(ref crop) = self.crop {
-            crop.offset_x.validate("offset_x")?;
-            crop.offset_y.validate("offset_y")?;
+            crop.validate()?;
         }
 
         if !(1..=120).contains(&self.export.fps) {

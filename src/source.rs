@@ -35,6 +35,33 @@ pub fn list_images(input_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(image_files)
 }
 
+/// Read the dimensions of every frame (header-only, no full decode) and
+/// verify they all match. Returns the common size.
+pub fn scan_dimensions(image_files: &[PathBuf]) -> Result<(u32, u32)> {
+    let mut expected: Option<(u32, u32)> = None;
+    for (index, path) in image_files.iter().enumerate() {
+        let (w, h) = image::ImageReader::open(path)
+            .map_err(|e| LapsifyError::io(path, e))?
+            .into_dimensions()?;
+        match expected {
+            None => expected = Some((w, h)),
+            Some((want_w, want_h)) => {
+                if (w, h) != (want_w, want_h) {
+                    return Err(LapsifyError::MixedFrameSizes {
+                        index,
+                        path: path.clone(),
+                        got_w: w,
+                        got_h: h,
+                        want_w,
+                        want_h,
+                    });
+                }
+            }
+        }
+    }
+    expected.ok_or_else(|| LapsifyError::message("No image files to scan"))
+}
+
 /// Select an inclusive frame range from the full sorted file list.
 pub fn select_frame_range(
     image_files: Vec<PathBuf>,

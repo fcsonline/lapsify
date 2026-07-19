@@ -8,7 +8,6 @@ use colored::*;
 use image::GenericImageView;
 use rayon::prelude::*;
 
-use crate::crop::{parse_crop_string, resolve_crop};
 use crate::error::{LapsifyError, Result};
 use crate::export::validate_resolution_proportion;
 use crate::project::Project;
@@ -62,10 +61,8 @@ pub fn render_to_video(project: &Project, start_time: Instant) -> Result<()> {
             let img = image::open(first_image_path)?;
             let (original_width, original_height) = img.dimensions();
 
-            let crop_params = parse_crop_string(&crop.window)?;
-            let resolved = resolve_crop(&crop_params, original_width, original_height);
-            let cropped_width = resolved.width as u32;
-            let cropped_height = resolved.height as u32;
+            let (_, _, cropped_width, cropped_height) =
+                crop.pixel_rect(start_idx as u32, original_width, original_height)?;
 
             let cropped_ratio = cropped_width as f32 / cropped_height as f32;
             let target_ratio = target_width as f32 / target_height as f32;

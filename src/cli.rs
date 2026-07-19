@@ -4,15 +4,14 @@ use std::time::Instant;
 use clap::parser::ValueSource;
 use clap::{Arg, ArgMatches, Command};
 use colored::*;
-use image::GenericImageView;
 
-use crate::crop::validate_crop_and_offsets;
+use crate::crop::{legacy_crop_to_track, parse_crop_dims};
 use crate::curve::{curve_from_legacy_array, parse_value_array, Curve};
 use crate::error::{LapsifyError, Result};
 use crate::export::images::render_to_images;
 use crate::export::video::render_to_video;
-use crate::project::{ColorGrade, CropSettings, ExportSettings, Project, PROJECT_VERSION};
-use crate::source::list_images;
+use crate::project::{ColorGrade, ExportSettings, Project, PROJECT_VERSION};
+use crate::source::{list_images, scan_dimensions};
 
 fn build_command() -> Command {
     Command::new("lapsify")
@@ -254,21 +253,27 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
         }
 
         if is_explicit(matches, "crop") {
-            project.crop = Some(CropSettings {
-                window: matches.get_one::<String>("crop").unwrap().clone(),
-                offset_x: Curve::Constant(0.0),
-                offset_y: Curve::Constant(0.0),
-            });
-        }
-        if let Some(ref mut crop) = project.crop {
-            if is_explicit(matches, "offset-x") {
-                let values = parse_value_array(matches.get_one::<String>("offset-x").unwrap())?;
-                crop.offset_x = curve_from_legacy_array(&values, total_frames);
-            }
-            if is_explicit(matches, "offset-y") {
-                let values = parse_value_array(matches.get_one::<String>("offset-y").unwrap())?;
-                crop.offset_y = curve_from_legacy_array(&values, total_frames);
-            }
+            let dims = parse_crop_dims(matches.get_one::<String>("crop").unwrap())?;
+
+            let offset = |name: &str| -> Result<Curve> {
+                match matches.get_one::<String>(name) {
+                    Some(raw) if is_explicit(matches, name) => {
+                        let values = parse_value_array(raw)?;
+                        Ok(curve_from_legacy_array(&values, total_frames))
+                    }
+                    _ => Ok(Curve::Constant(0.0)),
+                }
+            };
+
+            let image_files = list_images(&project.input)?;
+            let (src_w, src_h) = scan_dimensions(&image_files)?;
+            project.crop = Some(legacy_crop_to_track(
+                dims,
+                &offset("offset-x")?,
+                &offset("offset-y")?,
+                src_w,
+                src_h,
+            )?);
         }
     }
 
@@ -308,20 +313,12 @@ pub fn run() -> Result<()> {
     let project = build_project(&matches)?;
     project.validate()?;
 
-    // Early validation of crop and offset boundaries against the first frame.
-    // Interpolated offsets never exceed the min/max of their control values,
-    // so checking those extremes is sufficient.
+    // Scan every frame's header up front: catches mixed frame sizes before
+    // any processing, and validates the crop window against every frame.
+    let image_files = list_images(&project.input)?;
+    scan_dimensions(&image_files)?;
     if let Some(ref crop) = project.crop {
-        let image_files = list_images(&project.input)?;
-        let img = image::open(&image_files[0])?;
-        let (width, height) = img.dimensions();
-        validate_crop_and_offsets(
-            &crop.window,
-            &crop.offset_x.values(),
-            &crop.offset_y.values(),
-            width,
-            height,
-        )?;
+        crop.validate_over(image_files.len())?;
     }
 
     println!("{}", "Processing images with settings:".bold().cyan());
@@ -331,9 +328,11 @@ pub fn run() -> Result<()> {
     print_curve("Saturation", &project.color.saturation, "x");
 
     if let Some(ref crop) = project.crop {
-        println!("  {}: {}", "Crop".green(), crop.window);
-        print_curve("Offset X", &crop.offset_x, "px");
-        print_curve("Offset Y", &crop.offset_y, "px");
+        println!("  {}:", "Crop".green());
+        print_curve("  x", &crop.x, "");
+        print_curve("  y", &crop.y, "");
+        print_curve("  width", &crop.width, "");
+        print_curve("  height", &crop.height, "");
     }
 
     if threads > 0 {
