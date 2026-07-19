@@ -10,6 +10,16 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
+            if let Some(logo) = &app.logo {
+                ui.add(egui::Image::new((logo.id(), egui::vec2(22.0, 22.0))));
+                ui.label(
+                    egui::RichText::new("Lapsify Studio")
+                        .strong()
+                        .size(15.0),
+                );
+                ui.separator();
+            }
+
             if ui.button("📂 Open folder…").clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                     app.open_folder(&dir);

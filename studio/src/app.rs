@@ -39,6 +39,9 @@ pub struct StudioApp {
     pub show_compensation: bool,
     pub show_deflicker: bool,
 
+    // Branding
+    pub logo: Option<egui::TextureHandle>,
+
     // Debug self-test state
     selftest_started: bool,
 }
@@ -46,6 +49,17 @@ pub struct StudioApp {
 impl StudioApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
+        let logo = image::load_from_memory(include_bytes!("../assets/mark.png"))
+            .ok()
+            .map(|img| {
+                let rgba = img.into_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                cc.egui_ctx.load_texture(
+                    "logo",
+                    egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+                    egui::TextureOptions::LINEAR,
+                )
+            });
         Self {
             doc: None,
             worker: Worker::new(cc.egui_ctx.clone()),
@@ -63,6 +77,7 @@ impl StudioApp {
             show_developed_luma: false,
             show_compensation: false,
             show_deflicker: false,
+            logo,
             selftest_started: false,
         }
     }

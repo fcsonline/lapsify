@@ -6,10 +6,17 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
         .inner_margin(10.0);
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         let Some(doc) = &app.doc else {
-            ui.centered_and_justified(|ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space((ui.available_height() * 0.5 - 110.0).max(0.0));
+                if let Some(logo) = &app.logo {
+                    ui.add(egui::Image::new((logo.id(), egui::vec2(112.0, 112.0))));
+                    ui.add_space(14.0);
+                }
+                ui.label(egui::RichText::new("Lapsify Studio").strong().size(24.0));
+                ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new("Open a frames folder or a project.json to start")
-                        .size(18.0)
+                        .size(15.0)
                         .weak(),
                 );
             });
