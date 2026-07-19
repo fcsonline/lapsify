@@ -6,8 +6,9 @@ use crate::document::ParamId;
 
 pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
     egui::SidePanel::right("adjustments")
-        .default_width(320.0)
-        .min_width(300.0)
+        .default_width(248.0)
+        .min_width(220.0)
+        .max_width(340.0)
         .show(ctx, |ui| {
             let Some(doc) = &mut app.doc else {
                 ui.disable();
@@ -65,7 +66,7 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
 
                         // Fixed label column so the sliders line up.
                         ui.allocate_ui_with_layout(
-                            egui::vec2(76.0, 20.0),
+                            egui::vec2(68.0, 20.0),
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 ui.label(
@@ -76,7 +77,7 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                         );
 
                         // Slider fills the remaining width (value box ~56px).
-                        ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
+                        ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(60.0);
                         let slider = ui.add(
                             egui::Slider::new(&mut value, min..=max)
                                 .fixed_decimals(2)
@@ -176,10 +177,13 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                         ui.end_row();
 
                         ui.label("Output");
-                        ui.label(
-                            egui::RichText::new(export.output.display().to_string())
-                                .weak()
-                                .size(11.0),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(export.output.display().to_string())
+                                    .weak()
+                                    .size(11.0),
+                            )
+                            .truncate(),
                         )
                         .on_hover_text("Click to change")
                         .clicked()
