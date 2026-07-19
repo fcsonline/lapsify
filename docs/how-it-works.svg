@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="500" viewBox="0 0 980 500" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#57606a"/>
+    </marker>
+    <marker id="arrow-dash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#8c959f"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="980" height="500" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+
+  <!-- ============ Column 1: source frames ============ -->
+  <g>
+    <rect x="28" y="120" width="160" height="150" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="108" y="145" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2328">Source frames</text>
+    <!-- tiny film strip -->
+    <rect x="48" y="158" width="34" height="26" rx="3" fill="#ddf4ff" stroke="#54aeff"/>
+    <rect x="70" y="164" width="34" height="26" rx="3" fill="#b6e3ff" stroke="#54aeff"/>
+    <rect x="92" y="170" width="34" height="26" rx="3" fill="#80ccff" stroke="#54aeff"/>
+    <text x="140" y="188" font-size="11" fill="#57606a">…</text>
+    <text x="48" y="219" font-size="11" fill="#57606a">JPEG · PNG · TIFF</text>
+    <text x="48" y="236" font-size="11" fill="#57606a">EXIF: shutter, aperture,</text>
+    <text x="48" y="251" font-size="11" fill="#57606a">ISO, capture time</text>
+  </g>
+
+  <!-- ============ Column 2: analysis ============ -->
+  <g>
+    <rect x="228" y="60" width="190" height="270" rx="8" fill="#fbefff" stroke="#c297ff"/>
+    <text x="323" y="85" text-anchor="middle" font-size="14" font-weight="600" fill="#6639ba">Analyze (optional)</text>
+
+    <rect x="244" y="100" width="158" height="46" rx="6" fill="#ffffff" stroke="#c297ff"/>
+    <text x="323" y="119" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">analyze luminance</text>
+    <text x="323" y="135" text-anchor="middle" font-size="10.5" fill="#57606a">brightness of every frame</text>
+
+    <rect x="244" y="154" width="158" height="46" rx="6" fill="#ffffff" stroke="#c297ff"/>
+    <text x="323" y="173" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">analyze holygrail</text>
+    <text x="323" y="189" text-anchor="middle" font-size="10.5" fill="#57606a">cancel in-camera exposure jumps</text>
+
+    <rect x="244" y="208" width="158" height="46" rx="6" fill="#ffffff" stroke="#c297ff"/>
+    <text x="323" y="227" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">deflicker</text>
+    <text x="323" y="243" text-anchor="middle" font-size="10.5" fill="#57606a">smooth luminance, fix flicker</text>
+
+    <rect x="244" y="262" width="158" height="46" rx="6" fill="#ffffff" stroke="#c297ff"/>
+    <text x="323" y="281" text-anchor="middle" font-size="12" font-weight="600" fill="#1f2328">keyframes suggest</text>
+    <text x="323" y="297" text-anchor="middle" font-size="10.5" fill="#57606a">handles where brightness moves</text>
+  </g>
+
+  <!-- ============ Column 3: project.json ============ -->
+  <g>
+    <rect x="458" y="60" width="220" height="270" rx="8" fill="#fff8f0" stroke="#f0b269"/>
+    <text x="568" y="85" text-anchor="middle" font-size="14" font-weight="600" fill="#9a6700">project.json</text>
+    <text x="568" y="101" text-anchor="middle" font-size="10.5" fill="#57606a">single source of truth</text>
+
+    <rect x="474" y="112" width="188" height="58" rx="6" fill="#ffffff" stroke="#f0b269"/>
+    <text x="568" y="129" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1f2328">keyframed curves</text>
+    <text x="568" y="144" text-anchor="middle" font-size="10.5" fill="#57606a">exposure · white balance · contrast</text>
+    <text x="568" y="158" text-anchor="middle" font-size="10.5" fill="#57606a">highlights/shadows · tone curve …</text>
+
+    <rect x="474" y="178" width="188" height="42" rx="6" fill="#ffffff" stroke="#f0b269"/>
+    <text x="568" y="195" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1f2328">crop track</text>
+    <text x="568" y="210" text-anchor="middle" font-size="10.5" fill="#57606a">keyframed window: pan &amp; zoom</text>
+
+    <rect x="474" y="228" width="188" height="58" rx="6" fill="#ffffff" stroke="#f0b269"/>
+    <text x="568" y="245" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1f2328">exposure layers</text>
+    <text x="568" y="260" text-anchor="middle" font-size="10.5" fill="#57606a">your curve + EXIF compensation</text>
+    <text x="568" y="274" text-anchor="middle" font-size="10.5" fill="#57606a">+ deflicker corrections (summed)</text>
+
+    <rect x="474" y="294" width="188" height="26" rx="6" fill="#ffffff" stroke="#f0b269"/>
+    <text x="568" y="311" text-anchor="middle" font-size="11" fill="#57606a">export settings</text>
+  </g>
+
+  <!-- ============ Column 4: render engine ============ -->
+  <g>
+    <rect x="718" y="60" width="234" height="270" rx="8" fill="#eef6ff" stroke="#54aeff"/>
+    <text x="835" y="85" text-anchor="middle" font-size="14" font-weight="600" fill="#0969da">Render engine</text>
+    <text x="835" y="101" text-anchor="middle" font-size="10.5" fill="#57606a">every frame, on all cores</text>
+
+    <rect x="734" y="112" width="202" height="40" rx="6" fill="#ffffff" stroke="#54aeff"/>
+    <text x="835" y="129" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1f2328">1 · sample curves at frame</text>
+    <text x="835" y="144" text-anchor="middle" font-size="10.5" fill="#57606a">smooth spline through keyframes</text>
+
+    <rect x="734" y="160" width="202" height="40" rx="6" fill="#ffffff" stroke="#54aeff"/>
+    <text x="835" y="177" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1f2328">2 · crop window</text>
+    <text x="835" y="192" text-anchor="middle" font-size="10.5" fill="#57606a">animated crop = pan / zoom</text>
+
+    <rect x="734" y="208" width="202" height="40" rx="6" fill="#ffffff" stroke="#54aeff"/>
+    <text x="835" y="225" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1f2328">3 · color in linear light</text>
+    <text x="835" y="240" text-anchor="middle" font-size="10.5" fill="#57606a">whole tonal chain baked into a LUT</text>
+
+    <rect x="734" y="256" width="202" height="40" rx="6" fill="#ffffff" stroke="#54aeff"/>
+    <text x="835" y="273" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1f2328">4 · deliver in order</text>
+    <text x="835" y="288" text-anchor="middle" font-size="10.5" fill="#57606a">parallel render, ordered output</text>
+  </g>
+
+  <!-- ============ Outputs row ============ -->
+  <g>
+    <rect x="458" y="410" width="150" height="66" rx="8" fill="#eaf7ee" stroke="#4ac26b"/>
+    <text x="533" y="437" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1a7f37">video</text>
+    <text x="533" y="453" text-anchor="middle" font-size="10.5" fill="#57606a">frames piped into ffmpeg</text>
+    <text x="533" y="467" text-anchor="middle" font-size="10.5" fill="#57606a">h264 · h265 · prores</text>
+
+    <rect x="628" y="410" width="150" height="66" rx="8" fill="#eaf7ee" stroke="#4ac26b"/>
+    <text x="703" y="437" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1a7f37">image sequence</text>
+    <text x="703" y="453" text-anchor="middle" font-size="10.5" fill="#57606a">processed stills</text>
+    <text x="703" y="467" text-anchor="middle" font-size="10.5" fill="#57606a">JPEG · PNG · TIFF</text>
+
+    <rect x="798" y="410" width="154" height="66" rx="8" fill="#eaf7ee" stroke="#4ac26b"/>
+    <text x="875" y="437" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1a7f37">preview</text>
+    <text x="875" y="453" text-anchor="middle" font-size="10.5" fill="#57606a">one frame, fast,</text>
+    <text x="875" y="467" text-anchor="middle" font-size="10.5" fill="#57606a">through the same pipeline</text>
+  </g>
+
+  <!-- ============ Editor / tooling note ============ -->
+  <g>
+    <rect x="28" y="410" width="390" height="66" rx="8" fill="none" stroke="#8c959f" stroke-dasharray="5 4"/>
+    <text x="223" y="437" text-anchor="middle" font-size="12.5" font-weight="600" fill="#57606a">your editor / scripts</text>
+    <text x="223" y="453" text-anchor="middle" font-size="10.5" fill="#57606a">edit project.json directly · curves dump · project schema</text>
+    <text x="223" y="467" text-anchor="middle" font-size="10.5" fill="#57606a">--progress json streams events for UIs</text>
+  </g>
+
+  <!-- ============ Arrows ============ -->
+  <!-- source -> analysis -->
+  <line x1="188" y1="195" x2="222" y2="195" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <!-- analysis -> project -->
+  <line x1="418" y1="195" x2="452" y2="195" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <!-- project -> engine -->
+  <line x1="678" y1="195" x2="712" y2="195" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <!-- source -> engine (frames path along the top) -->
+  <path d="M 108 120 L 108 38 L 835 38 L 835 54" fill="none" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="470" y="30" text-anchor="middle" font-size="10.5" fill="#57606a">pixels</text>
+  <!-- engine -> outputs -->
+  <path d="M 795 330 L 795 370 L 533 370 L 533 404" fill="none" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M 835 330 L 835 370 L 703 370 L 703 404" fill="none" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M 875 330 L 875 404" fill="none" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <!-- editor <-> project (dashed, bidirectional) -->
+  <path d="M 223 410 L 223 360 L 500 360 L 500 336" fill="none" stroke="#8c959f" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrow-dash)" marker-start="url(#arrow-dash)"/>
+
+  <!-- caption under the analysis->project arrow group -->
+  <text x="435" y="215" text-anchor="middle" font-size="9.5" fill="#57606a">writes</text>
+  <text x="435" y="226" text-anchor="middle" font-size="9.5" fill="#57606a">layers</text>
+</svg>
