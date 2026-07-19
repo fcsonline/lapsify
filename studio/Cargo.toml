@@ -1,0 +1,18 @@
+[package]
+name = "lapsify-studio"
+version = "0.1.0"
+edition = "2021"
+description = "Visual editor for lapsify time-lapse projects"
+license = "MIT"
+
+[[bin]]
+name = "lapsify-studio"
+path = "src/main.rs"
+
+[dependencies]
+lapsify = { path = ".." }
+eframe = "0.32"
+egui = "0.32"
+egui_plot = "0.33"
+rfd = "0.15"
+image = "0.25"

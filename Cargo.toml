@@ -1,3 +1,6 @@
+[workspace]
+members = ["studio"]
+
 [package]
 name = "lapsify"
 version = "0.2.0"
