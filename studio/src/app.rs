@@ -292,7 +292,7 @@ impl StudioApp {
     pub fn job_render(&mut self) {
         let Some(doc) = &self.doc else { return };
         let project = doc.project.clone();
-        self.worker.run_job("render", move |reporter| {
+        self.worker.run_job("export", move |reporter| {
             let start = std::time::Instant::now();
             if project.is_video_output() {
                 lapsify::export::video::render_to_video(&project, reporter, start)

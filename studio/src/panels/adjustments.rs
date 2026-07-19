@@ -10,6 +10,8 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
         .min_width(220.0)
         .max_width(340.0)
         .show(ctx, |ui| {
+            let idle = app.worker.job_running.is_none();
+            let mut workflow_action = None;
             let Some(doc) = &mut app.doc else {
                 ui.disable();
                 return;
@@ -18,6 +20,8 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
             let mut changed = false;
 
             egui::ScrollArea::vertical().show(ui, |ui| {
+                workflow_action = crate::panels::workflow::section(ui, doc, idle);
+
                 ui.add_space(6.0);
                 ui.heading("Adjustments");
                 ui.add_space(2.0);
@@ -200,6 +204,9 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
             if changed {
                 doc.dirty = true;
                 app.preview_dirty = true;
+            }
+            if let Some(action) = workflow_action {
+                crate::panels::workflow::apply(app, action);
             }
         });
 }

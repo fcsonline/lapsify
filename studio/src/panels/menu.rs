@@ -140,7 +140,7 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                     app.job_suggest_keyframes();
                 }
                 ui.separator();
-                if ui.add_enabled(idle, egui::Button::new("Render…")).clicked() {
+                if ui.add_enabled(idle, egui::Button::new("Export…")).clicked() {
                     ui.close();
                     app.job_render();
                 }

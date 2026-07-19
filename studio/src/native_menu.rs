@@ -122,7 +122,7 @@ mod imp {
                 true,
                 accel(Modifiers::META, Code::KeyK),
             );
-            let render = MenuItem::new("Render", true, accel(Modifiers::META, Code::KeyR));
+            let render = MenuItem::new("Export…", true, accel(Modifiers::META, Code::KeyE));
             let analyze_menu = Submenu::new("Analyze", true);
             analyze_menu
                 .append_items(&[
