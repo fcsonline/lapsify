@@ -172,6 +172,47 @@ lapsify -i images/ -o out/ --crop "3000:2400:0:0" --offset-x "0,150" -f mp4
 Bare numbers are always pixels; use `%` for percentages. The crop window is
 validated against every frame before processing starts.
 
+### Day-to-night sequences and deflicker
+
+For sequences shot with changing camera settings, the full workflow is:
+
+```bash
+# 1. Measure per-frame luminance (writes into the project file)
+lapsify analyze luminance --project p.json
+
+# 2. Cancel in-camera exposure jumps using EXIF (shutter/aperture/ISO)
+lapsify analyze holygrail --project p.json
+
+# 3. Suggest keyframes where the brightness actually changes; --apply
+#    inserts them into the exposure curve at their current values
+lapsify keyframes suggest --project p.json --apply
+
+# 4. (edit keyframes in the project file or an editor, then...)
+
+# 5. Remove residual flicker: measures developed frames, smooths the
+#    luminance into a target and corrects each frame toward it
+lapsify deflicker --project p.json --smoothing 30
+
+# 6. Render (optionally with frame-blended motion blur)
+lapsify render --project p.json --motion-blur 3
+```
+
+Every analysis writes its results into the project file as a separate layer;
+the effective exposure at render time is the sum of your keyframed curve, the
+EXIF compensation and the deflicker corrections. `--no-holy-grail` /
+`--no-deflicker` ignore a layer for A/B comparisons, and re-running any
+analysis simply replaces its own layer.
+
+Related commands for editors and tooling:
+
+- `lapsify curves dump --project p.json` — every layer sampled per frame in
+  one JSON document (luminance, compensation, corrections, user curve, sum)
+- `lapsify project schema` — JSON Schema of the project format
+- `lapsify preview --frame N --out -` — PNG on stdout; `--source` renders the
+  ungraded frame for region picking
+- `"interpolation": "time"` in the project samples color curves in capture
+  time instead of frame index (needs timestamps from `analyze holygrail`)
+
 ### Driving lapsify from another program
 
 ```bash

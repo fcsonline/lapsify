@@ -5,7 +5,7 @@ use crate::error::{LapsifyError, Result};
 /// A parametric tone curve: monotone cubic interpolation through control
 /// points in the display-referred 0..=1 domain. Static across the clip
 /// (tone curve shapes are copied, not interpolated, between frames).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToneCurve {
     /// Control points (input, output), both 0..=1, sorted by input.
     pub points: Vec<(f32, f32)>,

@@ -17,7 +17,7 @@ use crate::error::{LapsifyError, Result};
 use crate::exif::{camera_ev, read_frame_exif};
 use crate::progress::{ProgressEvent, ProgressReporter};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HolyGrailLayer {
     /// Cumulative compensation in EV stops: raw[i] = EV_cam[i] − EV_cam[0].
     /// +1.0 means the camera captured one stop darker than frame 0, so the

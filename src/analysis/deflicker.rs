@@ -25,7 +25,7 @@ const LUMA_FLOOR: f32 = 1e-6;
 /// Per-pass correction step limit, in EV, for stability.
 const MAX_STEP_EV: f32 = 2.0;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DeflickerLayer {
     /// The target luminance curve (smoothed deflicker-free luminance).
     pub target: Vec<f32>,

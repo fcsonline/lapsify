@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{LapsifyError, Result};
 
 /// Easing applied to the segment that leaves a keyframe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Easing {
     /// Monotone cubic interpolation through all keyframes (no overshoot).
@@ -17,7 +19,7 @@ pub enum Easing {
     EaseInOut,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Keyframe {
     pub frame: u32,
     pub value: f32,
@@ -44,7 +46,7 @@ impl Keyframe {
 ///
 /// Serializes as a bare number ("exposure": 0.5) or a keyframe list
 /// ("exposure": [{"frame": 0, "value": 0.0}, {"frame": 120, "value": 1.5}]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum Curve {
     Constant(f32),

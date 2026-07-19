@@ -12,7 +12,7 @@ pub enum Dim {
 }
 
 /// A crop rectangle in normalized source-image coordinates (0..=1).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CropRect {
     pub x: f32,
     pub y: f32,
@@ -23,7 +23,7 @@ pub struct CropRect {
 /// A crop window over time. Every channel is an independently keyframable
 /// curve in normalized source-image coordinates, so pans and zooms fall out
 /// of ordinary keyframing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CropTrack {
     pub x: Curve,
     pub y: Curve,

@@ -13,7 +13,7 @@ pub const PROJECT_VERSION: u32 = 1;
 
 /// A lapsify project: the single source of truth for a render. The CLI flags
 /// build one of these, and a project JSON file deserializes into one.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Project {
     pub version: u32,
     /// Directory of source frames.
@@ -36,7 +36,9 @@ pub struct Project {
     pub analysis: Option<Analysis>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum InterpolationMode {
     #[default]
@@ -44,7 +46,7 @@ pub enum InterpolationMode {
     Time,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct ColorGrade {
     /// Exposure in EV stops.
@@ -96,7 +98,9 @@ impl Default for ColorGrade {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Codec {
     #[default]
@@ -120,7 +124,7 @@ impl std::str::FromStr for Codec {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ExportSettings {
     /// Output directory.
     pub output: PathBuf,
@@ -143,6 +147,10 @@ pub struct ExportSettings {
     /// JPEG quality for image-sequence output (1-100).
     #[serde(default = "default_jpeg_quality")]
     pub jpeg_quality: u8,
+    /// Motion blur as frame blending: each output frame averages this many
+    /// neighboring frames (video only). None/1 = off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_blur: Option<u32>,
 }
 
 fn default_format() -> String {
@@ -257,6 +265,13 @@ impl Project {
                 "ProRes requires the mov container (use -f mov)",
             ));
         }
+        if let Some(blur) = self.export.motion_blur {
+            if !(2..=128).contains(&blur) {
+                return Err(LapsifyError::message(
+                    "Motion blur must blend between 2 and 128 frames",
+                ));
+            }
+        }
 
         Ok(())
     }
@@ -273,6 +288,7 @@ impl ExportSettings {
             codec: Codec::default(),
             ten_bit: false,
             jpeg_quality: default_jpeg_quality(),
+            motion_blur: None,
         }
     }
 }

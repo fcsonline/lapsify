@@ -42,8 +42,14 @@ fn build_command() -> Command {
                 Arg::new("out")
                     .long("out")
                     .value_name("FILE")
-                    .help("Output image file")
+                    .help("Output image file, or '-' for PNG on stdout")
                     .default_value("preview.png"),
+            )
+            .arg(
+                Arg::new("source")
+                    .long("source")
+                    .num_args(0)
+                    .help("Render the ungraded source frame (no color, no crop) — for region picking"),
             ),
     )
     .subcommand(
@@ -52,7 +58,10 @@ fn build_command() -> Command {
             .subcommand_required(true)
             .subcommand(render_args(Command::new("dump").about(
                 "Print the project JSON that the given flags produce",
-            ))),
+            )))
+            .subcommand(Command::new("schema").about(
+                "Print the JSON Schema of the project file format (for editor validation)",
+            )),
     )
     .subcommand(
         render_args(Command::new("deflicker").about(
@@ -104,6 +113,14 @@ fn build_command() -> Command {
                 .num_args(0)
                 .help("Remove the deflicker layer from the project and exit"),
         ),
+    )
+    .subcommand(
+        Command::new("curves")
+            .about("Curve data for external editors")
+            .subcommand_required(true)
+            .subcommand(render_args(Command::new("dump").about(
+                "Print every layer curve sampled per frame as one JSON document",
+            ))),
     )
     .subcommand(
         Command::new("keyframes")
@@ -360,6 +377,12 @@ fn render_args(cmd: Command) -> Command {
                 .help("Encode with 10-bit chroma (h265 and prores only)"),
         )
         .arg(
+            Arg::new("motion-blur")
+                .long("motion-blur")
+                .value_name("FRAMES")
+                .help("Motion blur as frame blending: average this many neighboring frames per output frame (2-128, video only)"),
+        )
+        .arg(
             Arg::new("jpeg-quality")
                 .long("jpeg-quality")
                 .value_name("QUALITY")
@@ -523,6 +546,15 @@ fn build_project_inner(matches: &ArgMatches) -> Result<Project> {
     if is_explicit(matches, "ten-bit") {
         project.export.ten_bit = true;
     }
+    if is_explicit(matches, "motion-blur") {
+        project.export.motion_blur = Some(
+            matches
+                .get_one::<String>("motion-blur")
+                .unwrap()
+                .parse::<u32>()
+                .map_err(|_| LapsifyError::message("Invalid motion-blur value"))?,
+        );
+    }
     if overrides("jpeg-quality") {
         project.export.jpeg_quality = matches
             .get_one::<String>("jpeg-quality")
@@ -654,11 +686,25 @@ pub fn run() -> Result<()> {
         Some(("preview", sub)) => run_preview(sub),
         Some(("project", sub)) => match sub.subcommand() {
             Some(("dump", dump)) => run_project_dump(dump),
+            Some(("schema", _)) => {
+                let schema = schemars::schema_for!(Project);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&schema).map_err(|e| {
+                        LapsifyError::message(format!("Failed to serialize schema: {e}"))
+                    })?
+                );
+                Ok(())
+            }
             _ => unreachable!("subcommand_required"),
         },
         Some(("deflicker", sub)) => run_deflicker_cmd(sub),
         Some(("keyframes", sub)) => match sub.subcommand() {
             Some(("suggest", suggest)) => run_keyframes_suggest(suggest),
+            _ => unreachable!("subcommand_required"),
+        },
+        Some(("curves", sub)) => match sub.subcommand() {
+            Some(("dump", dump)) => run_curves_dump(dump),
             _ => unreachable!("subcommand_required"),
         },
         Some(("analyze", sub)) => match sub.subcommand() {
@@ -740,6 +786,58 @@ fn run_analyze_luminance(matches: &ArgMatches) -> Result<()> {
         output: written,
         elapsed_ms: start.elapsed().as_millis() as u64,
     });
+    Ok(())
+}
+
+/// Everything a curve editor needs to draw the layer graph, in one call:
+/// measured luminance series, the machine layers, and the user exposure
+/// curve sampled per frame, plus their sum.
+fn run_curves_dump(matches: &ArgMatches) -> Result<()> {
+    use crate::timeline::Timeline;
+
+    let project = build_project(matches)?;
+    project.validate()?;
+
+    let n = list_images(&project.input)?.len();
+    let timeline = Timeline::of(&project);
+    let analysis = project.analysis.as_ref();
+
+    let user_exposure: Vec<f32> = (0..n as u32)
+        .map(|f| project.color.exposure.sample_mapped(f, |x| timeline.x(x)))
+        .collect();
+    let holy_grail: Option<Vec<f32>> = analysis
+        .and_then(|a| a.holy_grail.as_ref())
+        .map(|hg| (0..n).map(|f| hg.effective(f)).collect());
+    let deflicker: Option<Vec<f32>> = analysis
+        .and_then(|a| a.deflicker.as_ref())
+        .map(|d| (0..n).map(|f| d.offset(f)).collect());
+    let effective: Vec<f32> = (0..n)
+        .map(|f| {
+            user_exposure[f]
+                + holy_grail.as_ref().map_or(0.0, |v| v[f])
+                + deflicker.as_ref().map_or(0.0, |v| v[f])
+        })
+        .collect();
+
+    let document = serde_json::json!({
+        "frames": n,
+        "capture_times_ms": analysis.and_then(|a| a.capture_times_ms.clone()),
+        "layers": {
+            "source_luminance": analysis.and_then(|a| a.source_luminance.as_ref()).map(|s| &s.values),
+            "developed_luminance": analysis.and_then(|a| a.developed_luminance.as_ref()).map(|s| &s.values),
+            "deflicker_target": analysis.and_then(|a| a.deflicker.as_ref()).map(|d| &d.target),
+            "holy_grail_ev": holy_grail,
+            "deflicker_ev": deflicker,
+            "user_exposure_ev": user_exposure,
+            "effective_exposure_ev": effective,
+        },
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&document)
+            .map_err(|e| LapsifyError::message(format!("Failed to serialize curves: {e}")))?
+    );
     Ok(())
 }
 
@@ -1012,11 +1110,44 @@ fn run_preview(matches: &ArgMatches) -> Result<()> {
         .map(|s| s.parse::<u32>())
         .transpose()
         .map_err(|_| LapsifyError::message("Invalid max-dim value"))?;
-    let out = PathBuf::from(matches.get_one::<String>("out").unwrap());
+    let out = matches.get_one::<String>("out").unwrap();
 
-    let preview = crate::render::render_preview(&project, frame, max_dim)?;
-    preview.save(&out)?;
-    eprintln!("Preview of frame {frame} written to {}", out.display());
+    let preview = if matches.get_flag("source") {
+        // Ungraded, uncropped source frame (downscaled), aligned with the
+        // coordinates that regions and the crop track are defined in.
+        let files = list_images(&project.input)?;
+        let path = files.get(frame as usize).ok_or_else(|| {
+            LapsifyError::message(format!(
+                "Frame {frame} is out of range (0-{})",
+                files.len().saturating_sub(1)
+            ))
+        })?;
+        let mut img = image::open(path)?;
+        if let Some(dim) = max_dim {
+            if img.width() > dim || img.height() > dim {
+                img = img.thumbnail(dim, dim);
+            }
+        }
+        img
+    } else {
+        crate::render::render_preview(&project, frame, max_dim)?
+    };
+
+    if out == "-" {
+        let mut bytes = Vec::new();
+        preview.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )?;
+        use std::io::Write;
+        std::io::stdout()
+            .write_all(&bytes)
+            .map_err(|e| LapsifyError::message(format!("Failed to write PNG to stdout: {e}")))?;
+    } else {
+        let out = PathBuf::from(out);
+        preview.save(&out)?;
+        eprintln!("Preview of frame {frame} written to {}", out.display());
+    }
     Ok(())
 }
 

@@ -23,7 +23,7 @@ use crate::crop::CropRect;
 use crate::error::{LapsifyError, Result};
 
 /// Analysis state stored inside the project JSON under "analysis".
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct Analysis {
     /// Mean linear luminance of the SOURCE frames (before any grading).
@@ -44,7 +44,7 @@ pub struct Analysis {
 }
 
 /// A per-frame scalar luminance series.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LumaSeries {
     /// Mean linear Rec.709 luminance per frame, one entry per source frame.
     pub values: Vec<f32>,

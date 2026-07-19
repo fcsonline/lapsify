@@ -42,18 +42,22 @@ impl FfmpegSink {
             .arg("-i")
             .arg("-");
 
-        // Scale to the requested resolution (fitting within it, preserving
-        // aspect ratio), then force even dimensions for chroma subsampling.
-        let filter = match export.resolution.as_deref() {
-            Some(res) => {
-                let (w, h) = parse_resolution(res)?;
-                format!(
-                    "scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2"
-                )
-            }
-            None => "scale=trunc(iw/2)*2:trunc(ih/2)*2".to_string(),
-        };
-        cmd.arg("-vf").arg(filter);
+        // Motion blur (a sliding average over neighboring frames) runs
+        // before any scaling; then scale to the requested resolution
+        // (fitting within it, preserving aspect ratio) and force even
+        // dimensions for chroma subsampling.
+        let mut filters = Vec::new();
+        if let Some(blur) = export.motion_blur {
+            filters.push(format!("tmix=frames={blur}"));
+        }
+        if let Some(res) = export.resolution.as_deref() {
+            let (w, h) = parse_resolution(res)?;
+            filters.push(format!(
+                "scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos"
+            ));
+        }
+        filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2".to_string());
+        cmd.arg("-vf").arg(filters.join(","));
 
         match export.codec {
             Codec::H264 => {
