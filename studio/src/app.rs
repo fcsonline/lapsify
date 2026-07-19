@@ -43,6 +43,10 @@ pub struct StudioApp {
     pub logo: Option<egui::TextureHandle>,
     pub show_about: bool,
 
+    // Native macOS menu bar
+    #[cfg(target_os = "macos")]
+    pub native_menu: Option<crate::native_menu::NativeMenu>,
+
     // Debug self-test state
     selftest_started: bool,
 }
@@ -80,6 +84,8 @@ impl StudioApp {
             show_deflicker: false,
             logo,
             show_about: false,
+            #[cfg(target_os = "macos")]
+            native_menu: crate::native_menu::NativeMenu::install(),
             selftest_started: false,
         }
     }
@@ -372,7 +378,15 @@ impl eframe::App for StudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events(ctx);
 
+        #[cfg(target_os = "macos")]
+        crate::native_menu::NativeMenu::poll(self);
+        #[cfg(not(target_os = "macos"))]
         panels::menu::show(self, ctx);
+        #[cfg(target_os = "macos")]
+        if self.show_about {
+            panels::menu::show_about_window(self, ctx);
+        }
+
         panels::toolbar::show(self, ctx);
         panels::adjustments::show(self, ctx);
         panels::timeline::show(self, ctx);

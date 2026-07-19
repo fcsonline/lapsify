@@ -10,6 +10,11 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
+            // Leave room for the macOS traffic lights overlaying the
+            // toolbar (transparent titlebar + fullsize content view).
+            #[cfg(target_os = "macos")]
+            ui.add_space(70.0);
+
             if let Some(logo) = &app.logo {
                 ui.add(egui::Image::new((logo.id(), egui::vec2(22.0, 22.0))));
                 ui.label(
@@ -109,6 +114,19 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                 }
             });
         });
+
+        // The toolbar doubles as the window drag region (no titlebar).
+        #[cfg(target_os = "macos")]
+        {
+            let response = ui.interact(
+                ui.max_rect(),
+                egui::Id::new("toolbar-window-drag"),
+                egui::Sense::click_and_drag(),
+            );
+            if response.drag_started() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+        }
     });
 
     // Status / error strip.

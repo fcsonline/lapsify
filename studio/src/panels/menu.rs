@@ -2,11 +2,14 @@
 
 use crate::app::StudioApp;
 
+#[cfg(not(target_os = "macos"))]
 pub const SHORTCUT_OPEN: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
+#[cfg(not(target_os = "macos"))]
 pub const SHORTCUT_SAVE: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
 
+#[cfg(not(target_os = "macos"))]
 pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
     // Global shortcuts work whether or not a menu is open.
     if ctx.input_mut(|i| i.consume_shortcut(&SHORTCUT_SAVE)) {
@@ -161,10 +164,11 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
     });
 
     if app.show_about {
-        show_about(app, ctx);
+        show_about_window(app, ctx);
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn open_project_dialog(app: &mut StudioApp) {
     if let Some(path) = rfd::FileDialog::new()
         .add_filter("Lapsify project", &["json"])
@@ -174,7 +178,7 @@ fn open_project_dialog(app: &mut StudioApp) {
     }
 }
 
-fn show_about(app: &mut StudioApp, ctx: &egui::Context) {
+pub fn show_about_window(app: &mut StudioApp, ctx: &egui::Context) {
     let mut open = app.show_about;
     egui::Window::new("About Lapsify Studio")
         .open(&mut open)

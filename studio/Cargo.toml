@@ -16,3 +16,6 @@ egui = "0.32"
 egui_plot = "0.33"
 rfd = "0.15"
 image = "0.25"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "0.17"

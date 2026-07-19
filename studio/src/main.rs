@@ -2,6 +2,7 @@
 
 mod app;
 mod document;
+mod native_menu;
 mod panels;
 mod theme;
 mod worker;
@@ -23,13 +24,23 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1440.0, 900.0])
+        .with_min_inner_size([900.0, 600.0])
+        .with_maximized(true)
+        .with_icon(app_icon())
+        .with_title("Lapsify Studio");
+    // Seamless mac chrome: content extends under a transparent titlebar and
+    // the traffic lights float over the toolbar.
+    #[cfg(target_os = "macos")]
+    {
+        viewport = viewport
+            .with_title_shown(false)
+            .with_titlebar_shown(false)
+            .with_fullsize_content_view(true);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([900.0, 600.0])
-            .with_maximized(true)
-            .with_icon(app_icon())
-            .with_title("Lapsify Studio"),
+        viewport,
         ..Default::default()
     };
     // Optional startup document: a project.json or a frames folder.
