@@ -25,6 +25,19 @@ CLI or as a Rust library.
   stdout, designed for driving lapsify from another program or UI
 - **Parallel processing**: frames render across all cores with bounded memory
 
+## How it works
+
+![How lapsify works](docs/how-it-works.svg)
+
+Everything revolves around the project file. Analysis commands read the source
+frames (pixels and EXIF) and write their results into `project.json` as
+separate layers next to your keyframed curves; the render engine samples all
+of it per frame — smooth splines through your keyframes, the exposure layers
+summed on top — crops, applies the color pipeline in linear light, and streams
+the frames in order to FFmpeg, an image sequence, or a single preview. Because
+edits and analysis live in the JSON (not in the pixels), every step is
+non-destructive and re-runnable.
+
 ## Installation
 
 ### Prerequisites
