@@ -41,6 +41,7 @@ pub struct StudioApp {
 
 impl StudioApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::theme::apply(&cc.egui_ctx);
         Self {
             doc: None,
             worker: Worker::new(cc.egui_ctx.clone()),

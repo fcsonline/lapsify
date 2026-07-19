@@ -59,6 +59,24 @@ impl ParamId {
         }
     }
 
+    /// Compact label for tight layouts.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            ParamId::Exposure => "Exposure",
+            ParamId::Temperature => "Temp",
+            ParamId::Tint => "Tint",
+            ParamId::Brightness => "Brightness",
+            ParamId::Contrast => "Contrast",
+            ParamId::Highlights => "Highlights",
+            ParamId::Shadows => "Shadows",
+            ParamId::Whites => "Whites",
+            ParamId::Blacks => "Blacks",
+            ParamId::Gamma => "Gamma",
+            ParamId::Saturation => "Saturation",
+            ParamId::Vibrance => "Vibrance",
+        }
+    }
+
     pub fn range(&self) -> (f32, f32) {
         match self {
             ParamId::Exposure => (-3.0, 3.0),

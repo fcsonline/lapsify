@@ -37,6 +37,7 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
             // ---- scrubber row -----------------------------------------
             ui.add_space(4.0);
             ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width = (ui.available_width() * 0.45).max(220.0);
                 let mut frame = app.current_frame;
                 let slider = ui.add(
                     egui::Slider::new(&mut frame, 0..=last_frame)
@@ -138,14 +139,15 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                     .collect();
                 plot_ui.line(
                     Line::new(param.label(), PlotPoints::from(sampled))
-                        .color(egui::Color32::from_rgb(250, 220, 90))
+                        .color(crate::theme::ACCENT)
                         .width(2.0),
                 );
 
                 // Playhead.
                 plot_ui.vline(
                     VLine::new("playhead", app.current_frame as f64)
-                        .color(egui::Color32::from_gray(160)),
+                        .color(egui::Color32::from_gray(200))
+                        .width(1.5),
                 );
 
                 // ---- keyframe editing ---------------------------------
@@ -161,8 +163,8 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                         .collect();
                     plot_ui.points(
                         Points::new("keyframes", PlotPoints::from(marker_points))
-                            .radius(5.0)
-                            .color(egui::Color32::from_rgb(255, 240, 150)),
+                            .radius(5.5)
+                            .color(crate::theme::ACCENT),
                     );
                 }
 

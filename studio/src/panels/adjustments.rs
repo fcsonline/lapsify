@@ -6,7 +6,8 @@ use crate::document::ParamId;
 
 pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
     egui::SidePanel::right("adjustments")
-        .default_width(280.0)
+        .default_width(320.0)
+        .min_width(300.0)
         .show(ctx, |ui| {
             let Some(doc) = &mut app.doc else {
                 ui.disable();
@@ -40,9 +41,9 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                         // the current frame, tinted while the curve is
                         // keyframed at all.
                         let color = if on_key {
-                            egui::Color32::from_rgb(250, 220, 90)
+                            crate::theme::ACCENT
                         } else if keyframed {
-                            egui::Color32::from_rgb(150, 135, 70)
+                            crate::theme::ACCENT_DIM
                         } else {
                             ui.visuals().weak_text_color()
                         };
@@ -62,9 +63,23 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                             changed = true;
                         }
 
+                        // Fixed label column so the sliders line up.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(76.0, 20.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(
+                                    egui::RichText::new(param.short_label())
+                                        .color(crate::theme::TEXT_WEAK),
+                                );
+                            },
+                        );
+
+                        // Slider fills the remaining width (value box ~56px).
+                        ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
                         let slider = ui.add(
                             egui::Slider::new(&mut value, min..=max)
-                                .text(param.label())
+                                .fixed_decimals(2)
                                 .clamping(egui::SliderClamping::Always),
                         );
                         if slider.changed() {

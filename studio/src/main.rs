@@ -3,13 +3,15 @@
 mod app;
 mod document;
 mod panels;
+mod theme;
 mod worker;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 840.0])
+            .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([900.0, 600.0])
+            .with_maximized(true)
             .with_title("Lapsify Studio"),
         ..Default::default()
     };

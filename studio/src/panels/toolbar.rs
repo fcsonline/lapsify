@@ -1,7 +1,12 @@
 use crate::app::StudioApp;
 
 pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
-    egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+    egui::TopBottomPanel::top("toolbar")
+        .frame(
+            egui::Frame::side_top_panel(&ctx.style())
+                .inner_margin(egui::Margin::symmetric(10, 8)),
+        )
+        .show(ctx, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
