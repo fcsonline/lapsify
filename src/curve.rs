@@ -1,4 +1,224 @@
+use serde::{Deserialize, Serialize};
+
 use crate::error::{LapsifyError, Result};
+
+/// Easing applied to the segment that leaves a keyframe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Easing {
+    /// Monotone cubic interpolation through all keyframes (no overshoot).
+    #[default]
+    Smooth,
+    Linear,
+    /// Keep the previous keyframe's value until the next keyframe.
+    Hold,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Keyframe {
+    pub frame: u32,
+    pub value: f32,
+    #[serde(default, skip_serializing_if = "is_default_easing")]
+    pub easing: Easing,
+}
+
+fn is_default_easing(easing: &Easing) -> bool {
+    *easing == Easing::Smooth
+}
+
+impl Keyframe {
+    pub fn new(frame: u32, value: f32) -> Self {
+        Self {
+            frame,
+            value,
+            easing: Easing::Smooth,
+        }
+    }
+}
+
+/// A parameter value over time: either constant for the whole clip or a set
+/// of keyframes anchored to specific frames.
+///
+/// Serializes as a bare number ("exposure": 0.5) or a keyframe list
+/// ("exposure": [{"frame": 0, "value": 0.0}, {"frame": 120, "value": 1.5}]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Curve {
+    Constant(f32),
+    Keyframed(Vec<Keyframe>),
+}
+
+impl Curve {
+    /// Sample the curve at a frame. Frames outside the keyframe range clamp
+    /// to the first/last keyframe value.
+    pub fn sample(&self, frame: u32) -> f32 {
+        match self {
+            Curve::Constant(v) => *v,
+            Curve::Keyframed(keyframes) => sample_keyframes(keyframes, frame),
+        }
+    }
+
+    /// All control values of the curve. Because interpolation is monotone
+    /// between keyframes, every sampled value lies within the min/max of
+    /// these values, which makes them sufficient for range validation.
+    pub fn values(&self) -> Vec<f32> {
+        match self {
+            Curve::Constant(v) => vec![*v],
+            Curve::Keyframed(keyframes) => keyframes.iter().map(|k| k.value).collect(),
+        }
+    }
+
+    pub fn validate(&self, name: &'static str) -> Result<()> {
+        if let Curve::Keyframed(keyframes) = self {
+            if keyframes.is_empty() {
+                return Err(LapsifyError::InvalidParam {
+                    field: name,
+                    reason: "keyframed curve must have at least one keyframe".to_string(),
+                });
+            }
+            for pair in keyframes.windows(2) {
+                if pair[1].frame <= pair[0].frame {
+                    return Err(LapsifyError::InvalidParam {
+                        field: name,
+                        reason: format!(
+                            "keyframes must be sorted by frame with no duplicates (frame {} follows frame {})",
+                            pair[1].frame, pair[0].frame
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate that every control value lies inside [min, max].
+    pub fn validate_range(&self, name: &'static str, min: f32, max: f32) -> Result<()> {
+        for value in self.values() {
+            if value < min || value > max {
+                return Err(LapsifyError::InvalidParam {
+                    field: name,
+                    reason: format!("value {value} is outside valid range [{min}, {max}]"),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn sample_keyframes(keyframes: &[Keyframe], frame: u32) -> f32 {
+    match keyframes {
+        [] => 0.0,
+        [only] => only.value,
+        _ => {
+            let first = &keyframes[0];
+            let last = &keyframes[keyframes.len() - 1];
+            if frame <= first.frame {
+                return first.value;
+            }
+            if frame >= last.frame {
+                return last.value;
+            }
+
+            // Index of the keyframe starting the segment containing `frame`.
+            let i = keyframes.partition_point(|k| k.frame <= frame) - 1;
+            let k0 = &keyframes[i];
+            let k1 = &keyframes[i + 1];
+            let t = (frame - k0.frame) as f32 / (k1.frame - k0.frame) as f32;
+
+            match k0.easing {
+                Easing::Hold => k0.value,
+                Easing::Linear => lerp(k0.value, k1.value, t),
+                Easing::EaseIn => lerp(k0.value, k1.value, t * t * t),
+                Easing::EaseOut => {
+                    let u = 1.0 - t;
+                    lerp(k0.value, k1.value, 1.0 - u * u * u)
+                }
+                Easing::EaseInOut => lerp(k0.value, k1.value, t * t * (3.0 - 2.0 * t)),
+                Easing::Smooth => {
+                    let tangents = monotone_tangents(keyframes);
+                    hermite(k0, k1, tangents[i], tangents[i + 1], t)
+                }
+            }
+        }
+    }
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+/// Fritsch-Carlson tangents for monotone cubic interpolation: the resulting
+/// spline passes through every keyframe and never overshoots the interval
+/// between neighboring keyframe values.
+fn monotone_tangents(keyframes: &[Keyframe]) -> Vec<f32> {
+    let n = keyframes.len();
+    let mut secants = Vec::with_capacity(n - 1);
+    for pair in keyframes.windows(2) {
+        let dx = (pair[1].frame - pair[0].frame) as f32;
+        secants.push((pair[1].value - pair[0].value) / dx);
+    }
+
+    let mut tangents = vec![0.0f32; n];
+    tangents[0] = secants[0];
+    tangents[n - 1] = secants[n - 2];
+    for i in 1..n - 1 {
+        if secants[i - 1] * secants[i] <= 0.0 {
+            tangents[i] = 0.0;
+        } else {
+            tangents[i] = (secants[i - 1] + secants[i]) / 2.0;
+        }
+    }
+
+    for i in 0..n - 1 {
+        if secants[i] == 0.0 {
+            tangents[i] = 0.0;
+            tangents[i + 1] = 0.0;
+        } else {
+            let alpha = tangents[i] / secants[i];
+            let beta = tangents[i + 1] / secants[i];
+            let s = alpha * alpha + beta * beta;
+            if s > 9.0 {
+                let tau = 3.0 / s.sqrt();
+                tangents[i] = tau * alpha * secants[i];
+                tangents[i + 1] = tau * beta * secants[i];
+            }
+        }
+    }
+
+    tangents
+}
+
+fn hermite(k0: &Keyframe, k1: &Keyframe, m0: f32, m1: f32, t: f32) -> f32 {
+    let h = (k1.frame - k0.frame) as f32;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+    h00 * k0.value + h10 * h * m0 + h01 * k1.value + h11 * h * m1
+}
+
+/// Convert a legacy comma-array value ("-1.0,0.5,1.0") into a curve: values
+/// are spread evenly over the clip as smooth keyframes.
+pub fn curve_from_legacy_array(values: &[f32], total_frames: usize) -> Curve {
+    if values.len() == 1 || total_frames <= 1 {
+        return Curve::Constant(values[0]);
+    }
+    let last_frame = (total_frames - 1) as f32;
+    let keyframes = values
+        .iter()
+        .enumerate()
+        .map(|(i, &value)| {
+            let frame = (i as f32 * last_frame / (values.len() - 1) as f32).round() as u32;
+            Keyframe::new(frame, value)
+        })
+        .collect();
+    Curve::Keyframed(keyframes)
+}
 
 /// Parse a comma-separated list of floats, e.g. "-1.0,0.5,1.0".
 pub fn parse_value_array(input: &str) -> Result<Vec<f32>> {
@@ -9,66 +229,163 @@ pub fn parse_value_array(input: &str) -> Result<Vec<f32>> {
         .map_err(|e| LapsifyError::message(format!("Failed to parse value array: {e}")))
 }
 
-pub fn validate_value_array(values: &[f32], name: &'static str, min: f32, max: f32) -> Result<()> {
-    for (i, &value) in values.iter().enumerate() {
-        if value < min || value > max {
-            return Err(LapsifyError::InvalidParam {
-                field: name,
-                reason: format!(
-                    "value at index {i} ({value}) is outside valid range [{min}, {max}]"
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-pub fn interpolate_value(values: &[f32], frame_index: usize, total_frames: usize) -> f32 {
-    if values.len() == 1 || total_frames <= 1 {
-        values[0]
-    } else if values.len() == 2 {
-        let t = frame_index as f32 / (total_frames - 1) as f32;
-        values[0] + (values[1] - values[0]) * t
-    } else {
-        let t = frame_index as f32 / (total_frames - 1) as f32;
-        bezier_interpolate(values, t)
-    }
-}
-
-/// Bezier curve interpolation using Bernstein polynomials.
-fn bezier_interpolate(control_points: &[f32], t: f32) -> f32 {
-    let n = control_points.len() - 1;
-    if n == 0 {
-        return control_points[0];
-    }
-
-    let mut result = 0.0;
-    for (i, &point) in control_points.iter().enumerate() {
-        let coefficient = binomial_coefficient(n, i) as f32;
-        result += coefficient * point * (1.0 - t).powi((n - i) as i32) * t.powi(i as i32);
-    }
-    result
-}
-
-fn binomial_coefficient(n: usize, k: usize) -> usize {
-    if k > n {
-        return 0;
-    }
-    if k == 0 || k == n {
-        return 1;
-    }
-
-    let mut result = 1;
-    for i in 0..k {
-        result = result * (n - i) / (i + 1);
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    fn keyframed(points: &[(u32, f32)]) -> Curve {
+        Curve::Keyframed(points.iter().map(|&(f, v)| Keyframe::new(f, v)).collect())
+    }
+
+    #[test]
+    fn constant_samples_everywhere() {
+        let curve = Curve::Constant(0.7);
+        assert_relative_eq!(curve.sample(0), 0.7);
+        assert_relative_eq!(curve.sample(1000), 0.7);
+    }
+
+    #[test]
+    fn curve_passes_through_every_keyframe() {
+        let points = [(0, 0.0), (10, 2.0), (20, -1.0), (35, 0.5)];
+        let curve = keyframed(&points);
+        for &(frame, value) in &points {
+            assert_relative_eq!(curve.sample(frame), value, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn clamps_outside_keyframe_range() {
+        let curve = keyframed(&[(10, 1.0), (20, 2.0)]);
+        assert_relative_eq!(curve.sample(0), 1.0);
+        assert_relative_eq!(curve.sample(100), 2.0);
+    }
+
+    #[test]
+    fn smooth_interpolation_never_overshoots() {
+        // Monotone data must stay monotone; all samples within neighbor bounds.
+        let curve = keyframed(&[(0, 0.0), (10, 0.1), (20, 5.0), (30, 5.1)]);
+        let mut prev = curve.sample(0);
+        for frame in 1..=30 {
+            let v = curve.sample(frame);
+            assert!(
+                v >= prev - 1e-4,
+                "not monotone at frame {frame}: {v} < {prev}"
+            );
+            assert!((-0.001..=5.101).contains(&v), "overshoot at {frame}: {v}");
+            prev = v;
+        }
+    }
+
+    #[test]
+    fn linear_easing_is_linear() {
+        let curve = Curve::Keyframed(vec![
+            Keyframe {
+                frame: 0,
+                value: 0.0,
+                easing: Easing::Linear,
+            },
+            Keyframe::new(10, 1.0),
+        ]);
+        assert_relative_eq!(curve.sample(5), 0.5);
+    }
+
+    #[test]
+    fn hold_easing_steps() {
+        let curve = Curve::Keyframed(vec![
+            Keyframe {
+                frame: 0,
+                value: 1.0,
+                easing: Easing::Hold,
+            },
+            Keyframe::new(10, 2.0),
+        ]);
+        assert_relative_eq!(curve.sample(9), 1.0);
+        assert_relative_eq!(curve.sample(10), 2.0);
+    }
+
+    #[test]
+    fn ease_in_out_hits_midpoint() {
+        let curve = Curve::Keyframed(vec![
+            Keyframe {
+                frame: 0,
+                value: 0.0,
+                easing: Easing::EaseInOut,
+            },
+            Keyframe::new(10, 1.0),
+        ]);
+        assert_relative_eq!(curve.sample(0), 0.0);
+        assert_relative_eq!(curve.sample(5), 0.5);
+        assert_relative_eq!(curve.sample(10), 1.0);
+    }
+
+    #[test]
+    fn single_keyframe_is_constant() {
+        let curve = keyframed(&[(5, 3.0)]);
+        assert_relative_eq!(curve.sample(0), 3.0);
+        assert_relative_eq!(curve.sample(99), 3.0);
+    }
+
+    #[test]
+    fn validate_rejects_unsorted_and_empty() {
+        assert!(keyframed(&[(10, 0.0), (5, 1.0)]).validate("test").is_err());
+        assert!(keyframed(&[(5, 0.0), (5, 1.0)]).validate("test").is_err());
+        assert!(Curve::Keyframed(vec![]).validate("test").is_err());
+        assert!(keyframed(&[(0, 0.0), (5, 1.0)]).validate("test").is_ok());
+        assert!(Curve::Constant(1.0).validate("test").is_ok());
+    }
+
+    #[test]
+    fn validate_range_checks_control_values() {
+        assert!(Curve::Constant(5.0)
+            .validate_range("test", -3.0, 3.0)
+            .is_err());
+        assert!(keyframed(&[(0, -1.0), (10, 1.0)])
+            .validate_range("test", -3.0, 3.0)
+            .is_ok());
+    }
+
+    #[test]
+    fn legacy_array_conversion_spreads_keyframes() {
+        let curve = curve_from_legacy_array(&[0.0, 1.0, 0.5], 101);
+        match &curve {
+            Curve::Keyframed(kfs) => {
+                assert_eq!(kfs.len(), 3);
+                assert_eq!(kfs[0].frame, 0);
+                assert_eq!(kfs[1].frame, 50);
+                assert_eq!(kfs[2].frame, 100);
+            }
+            _ => panic!("expected keyframed curve"),
+        }
+        // The curve passes through every legacy value.
+        assert_relative_eq!(curve.sample(50), 1.0);
+
+        assert_eq!(curve_from_legacy_array(&[0.5], 100), Curve::Constant(0.5));
+        assert_eq!(
+            curve_from_legacy_array(&[0.5, 1.0], 1),
+            Curve::Constant(0.5)
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_constant_and_keyframed() {
+        let constant: Curve = serde_json::from_str("0.5").unwrap();
+        assert_eq!(constant, Curve::Constant(0.5));
+
+        let json = r#"[{"frame":0,"value":0.0},{"frame":10,"value":1.0,"easing":"linear"}]"#;
+        let curve: Curve = serde_json::from_str(json).unwrap();
+        match &curve {
+            Curve::Keyframed(kfs) => {
+                assert_eq!(kfs[0].easing, Easing::Smooth);
+                assert_eq!(kfs[1].easing, Easing::Linear);
+            }
+            _ => panic!("expected keyframed curve"),
+        }
+
+        let back = serde_json::to_string(&curve).unwrap();
+        let reparsed: Curve = serde_json::from_str(&back).unwrap();
+        assert_eq!(curve, reparsed);
+    }
 
     #[test]
     fn parse_value_array_single_and_multi() {
@@ -79,47 +396,5 @@ mod tests {
         );
         assert!(parse_value_array("1.0,abc").is_err());
         assert!(parse_value_array("").is_err());
-    }
-
-    #[test]
-    fn validate_value_array_bounds() {
-        assert!(validate_value_array(&[0.0, 1.0], "test", -1.0, 1.0).is_ok());
-        assert!(validate_value_array(&[2.0], "test", -1.0, 1.0).is_err());
-    }
-
-    #[test]
-    fn interpolate_single_value_is_constant() {
-        assert_relative_eq!(interpolate_value(&[0.7], 0, 10), 0.7);
-        assert_relative_eq!(interpolate_value(&[0.7], 9, 10), 0.7);
-    }
-
-    #[test]
-    fn interpolate_two_values_is_linear() {
-        assert_relative_eq!(interpolate_value(&[0.0, 1.0], 0, 11), 0.0);
-        assert_relative_eq!(interpolate_value(&[0.0, 1.0], 5, 11), 0.5);
-        assert_relative_eq!(interpolate_value(&[0.0, 1.0], 10, 11), 1.0);
-    }
-
-    #[test]
-    fn interpolate_single_frame_clip_returns_first_value() {
-        // A 1-frame clip must not divide by zero.
-        let v = interpolate_value(&[0.0, 1.0], 0, 1);
-        assert!(v.is_finite());
-        assert_relative_eq!(v, 0.0);
-    }
-
-    #[test]
-    fn bezier_hits_endpoints() {
-        let points = [0.0, 5.0, 1.0];
-        assert_relative_eq!(interpolate_value(&points, 0, 100), 0.0);
-        assert_relative_eq!(interpolate_value(&points, 99, 100), 1.0, epsilon = 1e-4);
-    }
-
-    #[test]
-    fn binomial_coefficients() {
-        assert_eq!(binomial_coefficient(4, 0), 1);
-        assert_eq!(binomial_coefficient(4, 2), 6);
-        assert_eq!(binomial_coefficient(4, 4), 1);
-        assert_eq!(binomial_coefficient(2, 3), 0);
     }
 }

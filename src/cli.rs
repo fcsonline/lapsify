@@ -1,29 +1,37 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use clap::{Arg, Command};
+use clap::parser::ValueSource;
+use clap::{Arg, ArgMatches, Command};
 use colored::*;
 use image::GenericImageView;
 
 use crate::crop::validate_crop_and_offsets;
-use crate::curve::{parse_value_array, validate_value_array};
+use crate::curve::{curve_from_legacy_array, parse_value_array, Curve};
 use crate::error::{LapsifyError, Result};
-use crate::export::images::process_images_to_images;
-use crate::export::video::process_images_to_video;
-use crate::render::ImageAdjustments;
+use crate::export::images::render_to_images;
+use crate::export::video::render_to_video;
+use crate::project::{ColorGrade, CropSettings, ExportSettings, Project, PROJECT_VERSION};
 use crate::source::list_images;
 
 fn build_command() -> Command {
     Command::new("lapsify")
         .version(env!("CARGO_PKG_VERSION"))
-        .about("Process time-lapse images with adjustable parameters")
+        .about("Process time-lapse images with keyframable adjustments")
+        .arg(
+            Arg::new("project")
+                .short('p')
+                .long("project")
+                .value_name("FILE")
+                .help("Project file (JSON) describing input, adjustments and export settings. Other flags override its values"),
+        )
         .arg(
             Arg::new("input")
                 .short('i')
                 .long("input")
                 .value_name("DIR")
                 .help("Input directory containing images")
-                .required(true),
+                .required_unless_present("project"),
         )
         .arg(
             Arg::new("output")
@@ -31,7 +39,7 @@ fn build_command() -> Command {
                 .long("output")
                 .value_name("DIR")
                 .help("Output directory for processed images")
-                .required(true),
+                .required_unless_present("project"),
         )
         .arg(
             Arg::new("exposure")
@@ -110,6 +118,12 @@ fn build_command() -> Command {
                 .help("Start frame index (0-based, inclusive). Default: 0 (first frame)"),
         )
         .arg(
+            Arg::new("end-frame")
+                .long("end-frame")
+                .value_name("INDEX")
+                .help("End frame index (0-based, inclusive). Default: last frame"),
+        )
+        .arg(
             Arg::new("crop")
                 .long("crop")
                 .value_name("WIDTH:HEIGHT:X:Y")
@@ -127,61 +141,162 @@ fn build_command() -> Command {
                 .value_name("PIXELS")
                 .help("Y offset for crop window in pixels. Single value or comma-separated array. Examples: '-5' (static), '0,10,0,-10' (panning), '0,-3,3,0' (stabilization)"),
         )
-        .arg(
-            Arg::new("end-frame")
-                .long("end-frame")
-                .value_name("INDEX")
-                .help("End frame index (0-based, inclusive). Default: last frame"),
-        )
 }
 
-fn print_value_array(name: &str, values: &[f32], unit: &str) {
-    if values.len() == 1 {
-        println!("  {}: {}{}", name.green(), values[0], unit);
-    } else {
-        let values_str = values
-            .iter()
-            .map(|v| format!("{v}{unit}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("  {}: [{}]", name.green(), values_str);
+fn is_explicit(matches: &ArgMatches, name: &str) -> bool {
+    matches.value_source(name) == Some(ValueSource::CommandLine)
+}
+
+/// Build the project from a project file (if given) with CLI flag overrides,
+/// or purely from CLI flags.
+fn build_project(matches: &ArgMatches) -> Result<Project> {
+    let from_file = matches.get_one::<String>("project").is_some();
+
+    let mut project = match matches.get_one::<String>("project") {
+        Some(path) => Project::from_json_file(Path::new(path))?,
+        None => Project {
+            version: PROJECT_VERSION,
+            input: PathBuf::from(matches.get_one::<String>("input").unwrap()),
+            frame_range: None,
+            color: ColorGrade::default(),
+            crop: None,
+            export: ExportSettings {
+                output: PathBuf::from(matches.get_one::<String>("output").unwrap()),
+                format: "mp4".to_string(),
+                fps: 24,
+                quality: 20,
+                resolution: None,
+            },
+        },
+    };
+
+    // A flag overrides the project file only when passed explicitly; without
+    // a project file, flags (including their defaults) define everything.
+    let overrides = |name: &str| !from_file || is_explicit(matches, name);
+
+    if from_file && is_explicit(matches, "input") {
+        project.input = PathBuf::from(matches.get_one::<String>("input").unwrap());
     }
-}
-
-pub fn run() -> Result<()> {
-    let matches = build_command().get_matches();
-
-    let input_dir = matches.get_one::<String>("input").unwrap();
-    let output_dir = matches.get_one::<String>("output").unwrap();
-    let format = matches.get_one::<String>("format").unwrap();
-    let fps = matches
-        .get_one::<String>("fps")
-        .unwrap()
-        .parse::<u32>()
-        .map_err(|_| LapsifyError::message("Invalid fps value"))?;
-    let quality = matches
-        .get_one::<String>("quality")
-        .unwrap()
-        .parse::<u32>()
-        .map_err(|_| LapsifyError::message("Invalid quality value"))?;
-    let resolution = matches.get_one::<String>("resolution").map(|s| s.as_str());
-    let threads = matches
-        .get_one::<String>("threads")
-        .unwrap()
-        .parse::<usize>()
-        .map_err(|_| LapsifyError::message("Invalid threads value"))?;
+    if from_file && is_explicit(matches, "output") {
+        project.export.output = PathBuf::from(matches.get_one::<String>("output").unwrap());
+    }
+    if overrides("format") {
+        project.export.format = matches.get_one::<String>("format").unwrap().clone();
+    }
+    if overrides("fps") {
+        project.export.fps = matches
+            .get_one::<String>("fps")
+            .unwrap()
+            .parse::<u32>()
+            .map_err(|_| LapsifyError::message("Invalid fps value"))?;
+    }
+    if overrides("quality") {
+        project.export.quality = matches
+            .get_one::<String>("quality")
+            .unwrap()
+            .parse::<u32>()
+            .map_err(|_| LapsifyError::message("Invalid quality value"))?;
+    }
+    if is_explicit(matches, "resolution") {
+        project.export.resolution = matches.get_one::<String>("resolution").cloned();
+    }
 
     let start_frame = matches
         .get_one::<String>("start-frame")
         .map(|s| s.parse::<usize>())
         .transpose()
         .map_err(|_| LapsifyError::message("Invalid start-frame value"))?;
-
     let end_frame = matches
         .get_one::<String>("end-frame")
         .map(|s| s.parse::<usize>())
         .transpose()
         .map_err(|_| LapsifyError::message("Invalid end-frame value"))?;
+    if start_frame.is_some() || end_frame.is_some() {
+        let image_count = list_images(&project.input)?.len();
+        let start = start_frame.unwrap_or(0);
+        let end = end_frame.unwrap_or(image_count.saturating_sub(1));
+        project.frame_range = Some((start, end));
+    }
+
+    // Legacy comma-array flags are anchored to evenly spaced keyframes over
+    // the full sequence, so conversion needs the frame count.
+    let legacy_curves = ["exposure", "brightness", "contrast", "saturation"]
+        .iter()
+        .any(|name| overrides(name))
+        || is_explicit(matches, "crop")
+        || is_explicit(matches, "offset-x")
+        || is_explicit(matches, "offset-y");
+
+    if legacy_curves {
+        let total_frames = list_images(&project.input)?.len();
+
+        let legacy = |name: &str| -> Result<Curve> {
+            let values = parse_value_array(matches.get_one::<String>(name).unwrap())?;
+            if values.is_empty() {
+                return Err(LapsifyError::message(format!(
+                    "Empty value array for {name}"
+                )));
+            }
+            Ok(curve_from_legacy_array(&values, total_frames))
+        };
+
+        if overrides("exposure") {
+            project.color.exposure = legacy("exposure")?;
+        }
+        if overrides("brightness") {
+            project.color.brightness = legacy("brightness")?;
+        }
+        if overrides("contrast") {
+            project.color.contrast = legacy("contrast")?;
+        }
+        if overrides("saturation") {
+            project.color.saturation = legacy("saturation")?;
+        }
+
+        if is_explicit(matches, "crop") {
+            project.crop = Some(CropSettings {
+                window: matches.get_one::<String>("crop").unwrap().clone(),
+                offset_x: Curve::Constant(0.0),
+                offset_y: Curve::Constant(0.0),
+            });
+        }
+        if let Some(ref mut crop) = project.crop {
+            if is_explicit(matches, "offset-x") {
+                let values = parse_value_array(matches.get_one::<String>("offset-x").unwrap())?;
+                crop.offset_x = curve_from_legacy_array(&values, total_frames);
+            }
+            if is_explicit(matches, "offset-y") {
+                let values = parse_value_array(matches.get_one::<String>("offset-y").unwrap())?;
+                crop.offset_y = curve_from_legacy_array(&values, total_frames);
+            }
+        }
+    }
+
+    Ok(project)
+}
+
+fn print_curve(name: &str, curve: &Curve, unit: &str) {
+    match curve {
+        Curve::Constant(v) => println!("  {}: {}{}", name.green(), v, unit),
+        Curve::Keyframed(keyframes) => {
+            let values_str = keyframes
+                .iter()
+                .map(|k| format!("{}@{}{}", k.value, k.frame, unit))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  {}: [{}]", name.green(), values_str);
+        }
+    }
+}
+
+pub fn run() -> Result<()> {
+    let matches = build_command().get_matches();
+
+    let threads = matches
+        .get_one::<String>("threads")
+        .unwrap()
+        .parse::<usize>()
+        .map_err(|_| LapsifyError::message("Invalid threads value"))?;
 
     if threads > 0 {
         rayon::ThreadPoolBuilder::new()
@@ -190,72 +305,35 @@ pub fn run() -> Result<()> {
             .map_err(|e| LapsifyError::message(format!("Failed to configure thread pool: {e}")))?;
     }
 
-    let adjustments = ImageAdjustments {
-        exposure: parse_value_array(matches.get_one::<String>("exposure").unwrap())?,
-        brightness: parse_value_array(matches.get_one::<String>("brightness").unwrap())?,
-        contrast: parse_value_array(matches.get_one::<String>("contrast").unwrap())?,
-        saturation: parse_value_array(matches.get_one::<String>("saturation").unwrap())?,
-        crop: matches.get_one::<String>("crop").cloned(),
-        offset_x: parse_value_array(
-            matches
-                .get_one::<String>("offset-x")
-                .unwrap_or(&"0.0".to_string()),
-        )?,
-        offset_y: parse_value_array(
-            matches
-                .get_one::<String>("offset-y")
-                .unwrap_or(&"0.0".to_string()),
-        )?,
-    };
-
-    validate_value_array(&adjustments.exposure, "Exposure", -3.0, 3.0)?;
-    validate_value_array(&adjustments.brightness, "Brightness", -100.0, 100.0)?;
-    validate_value_array(&adjustments.contrast, "Contrast", 0.1, 3.0)?;
-    validate_value_array(&adjustments.saturation, "Saturation", 0.0, 2.0)?;
-
-    if !(1..=120).contains(&fps) {
-        return Err(LapsifyError::message("FPS must be between 1 and 120"));
-    }
-    if quality > 51 {
-        return Err(LapsifyError::message(
-            "Quality (CRF) must be between 0 and 51",
-        ));
-    }
-
-    if let (Some(start), Some(end)) = (start_frame, end_frame) {
-        if start > end {
-            return Err(LapsifyError::message(
-                "Start frame must be less than or equal to end frame",
-            ));
-        }
-    }
+    let project = build_project(&matches)?;
+    project.validate()?;
 
     // Early validation of crop and offset boundaries against the first frame.
-    if let Some(ref crop_str) = adjustments.crop {
-        let image_files = list_images(Path::new(input_dir))?;
+    // Interpolated offsets never exceed the min/max of their control values,
+    // so checking those extremes is sufficient.
+    if let Some(ref crop) = project.crop {
+        let image_files = list_images(&project.input)?;
         let img = image::open(&image_files[0])?;
         let (width, height) = img.dimensions();
         validate_crop_and_offsets(
-            crop_str,
-            &adjustments.offset_x,
-            &adjustments.offset_y,
+            &crop.window,
+            &crop.offset_x.values(),
+            &crop.offset_y.values(),
             width,
             height,
         )?;
     }
 
-    let is_video_output = matches!(format.as_str(), "mp4" | "mov" | "avi");
-
     println!("{}", "Processing images with settings:".bold().cyan());
-    print_value_array("Exposure", &adjustments.exposure, "EV");
-    print_value_array("Brightness", &adjustments.brightness, "");
-    print_value_array("Contrast", &adjustments.contrast, "x");
-    print_value_array("Saturation", &adjustments.saturation, "x");
+    print_curve("Exposure", &project.color.exposure, "EV");
+    print_curve("Brightness", &project.color.brightness, "");
+    print_curve("Contrast", &project.color.contrast, "x");
+    print_curve("Saturation", &project.color.saturation, "x");
 
-    if let Some(ref crop_str) = adjustments.crop {
-        println!("  {}: {}", "Crop".green(), crop_str);
-        print_value_array("Offset X", &adjustments.offset_x, "px");
-        print_value_array("Offset Y", &adjustments.offset_y, "px");
+    if let Some(ref crop) = project.crop {
+        println!("  {}: {}", "Crop".green(), crop.window);
+        print_curve("Offset X", &crop.offset_x, "px");
+        print_curve("Offset Y", &crop.offset_y, "px");
     }
 
     if threads > 0 {
@@ -267,62 +345,41 @@ pub fn run() -> Result<()> {
             rayon::current_num_threads()
         );
     }
-    if is_video_output {
+    if project.is_video_output() {
         println!(
             "  {}: {} video at {} fps (CRF {})",
             "Output".yellow(),
-            format,
-            fps,
-            quality
+            project.export.format,
+            project.export.fps,
+            project.export.quality
         );
-        if let Some(res) = resolution {
+        if let Some(ref res) = project.export.resolution {
             println!("  {}: {}", "Resolution".yellow(), res);
         }
     } else {
-        println!("  {}: {} images", "Output format".yellow(), format);
+        println!(
+            "  {}: {} images",
+            "Output format".yellow(),
+            project.export.format
+        );
     }
 
-    if let Some(start) = start_frame {
-        if let Some(end) = end_frame {
-            println!(
-                "  {}: frames {} to {} ({} frames)",
-                "Frame range".yellow(),
-                start,
-                end,
-                end - start + 1
-            );
-        } else {
-            println!("  {}: from frame {} to end", "Frame range".yellow(), start);
-        }
-    } else if let Some(end) = end_frame {
-        println!("  {}: from start to frame {}", "Frame range".yellow(), end);
+    if let Some((start, end)) = project.frame_range {
+        println!(
+            "  {}: frames {} to {} ({} frames)",
+            "Frame range".yellow(),
+            start,
+            end,
+            end.saturating_sub(start) + 1
+        );
     }
 
     let start_time = Instant::now();
 
-    if is_video_output {
-        process_images_to_video(
-            input_dir,
-            output_dir,
-            &adjustments,
-            format,
-            fps,
-            quality,
-            resolution,
-            start_frame,
-            end_frame,
-            start_time,
-        )?;
+    if project.is_video_output() {
+        render_to_video(&project, start_time)?;
     } else {
-        process_images_to_images(
-            input_dir,
-            output_dir,
-            &adjustments,
-            format,
-            start_frame,
-            end_frame,
-            start_time,
-        )?;
+        render_to_images(&project, start_time)?;
     }
 
     Ok(())

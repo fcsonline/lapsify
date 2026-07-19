@@ -3,72 +3,51 @@ use std::path::Path;
 use image::{DynamicImage, ImageBuffer, Rgb};
 
 use crate::crop::{parse_crop_string, resolve_crop};
-use crate::curve::interpolate_value;
 use crate::error::{LapsifyError, Result};
+use crate::project::Project;
 
-#[derive(Debug, Clone)]
-pub struct ImageAdjustments {
-    pub exposure: Vec<f32>,
-    pub brightness: Vec<f32>,
-    pub contrast: Vec<f32>,
-    pub saturation: Vec<f32>,
-    pub crop: Option<String>,
-    pub offset_x: Vec<f32>,
-    pub offset_y: Vec<f32>,
+/// Adjustment values resolved for a single frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameParams {
+    pub exposure: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
 }
 
-impl Default for ImageAdjustments {
-    fn default() -> Self {
+impl FrameParams {
+    pub fn at_frame(project: &Project, frame: u32) -> Self {
+        let color = &project.color;
+        let (offset_x, offset_y) = match &project.crop {
+            Some(crop) => (crop.offset_x.sample(frame), crop.offset_y.sample(frame)),
+            None => (0.0, 0.0),
+        };
         Self {
-            exposure: vec![0.0],   // EV stops (+/- values)
-            brightness: vec![0.0], // -100 to +100
-            contrast: vec![1.0],   // 0.0 to 2.0 (1.0 = no change)
-            saturation: vec![1.0], // 0.0 to 2.0 (1.0 = no change)
-            crop: None,            // Crop string in format "width:height:x:y"
-            offset_x: vec![0.0],   // X offset for crop window (pixels)
-            offset_y: vec![0.0],   // Y offset for crop window (pixels)
+            exposure: color.exposure.sample(frame),
+            brightness: color.brightness.sample(frame),
+            contrast: color.contrast.sample(frame),
+            saturation: color.saturation.sample(frame),
+            offset_x,
+            offset_y,
         }
     }
 }
 
-impl ImageAdjustments {
-    pub fn get_values_at_frame(
-        &self,
-        frame_index: usize,
-        total_frames: usize,
-    ) -> (f32, f32, f32, f32) {
-        (
-            interpolate_value(&self.exposure, frame_index, total_frames),
-            interpolate_value(&self.brightness, frame_index, total_frames),
-            interpolate_value(&self.contrast, frame_index, total_frames),
-            interpolate_value(&self.saturation, frame_index, total_frames),
-        )
-    }
-}
-
-pub fn apply_adjustments(
-    img: DynamicImage,
-    adjustments: &ImageAdjustments,
-    frame_index: usize,
-    total_frames: usize,
-) -> Result<DynamicImage> {
+pub fn render_frame(img: DynamicImage, project: &Project, frame: u32) -> Result<DynamicImage> {
+    let params = FrameParams::at_frame(project, frame);
     let rgb_img = img.to_rgb8();
     let (width, height) = rgb_img.dimensions();
 
-    let (exposure, brightness, contrast, saturation) =
-        adjustments.get_values_at_frame(frame_index, total_frames);
+    let (start_x, start_y, end_x, end_y) = if let Some(ref crop) = project.crop {
+        let crop_params = parse_crop_string(&crop.window)?;
+        let resolved = resolve_crop(&crop_params, width, height);
 
-    let offset_x = interpolate_value(&adjustments.offset_x, frame_index, total_frames);
-    let offset_y = interpolate_value(&adjustments.offset_y, frame_index, total_frames);
-
-    let (start_x, start_y, end_x, end_y) = if let Some(ref crop_str) = adjustments.crop {
-        let crop_params = parse_crop_string(crop_str)?;
-        let crop = resolve_crop(&crop_params, width, height);
-
-        let start_x = (crop.x + offset_x) as u32;
-        let start_y = (crop.y + offset_y) as u32;
-        let end_x = (start_x + crop.width as u32).min(width);
-        let end_y = (start_y + crop.height as u32).min(height);
+        let start_x = (resolved.x + params.offset_x) as u32;
+        let start_y = (resolved.y + params.offset_y) as u32;
+        let end_x = (start_x + resolved.width as u32).min(width);
+        let end_y = (start_y + resolved.height as u32).min(height);
 
         (start_x, start_y, end_x, end_y)
     } else {
@@ -92,31 +71,31 @@ pub fn apply_adjustments(
         let mut bf = b as f32 / 255.0;
 
         // Apply exposure (2^stops multiplier)
-        if exposure != 0.0 {
-            let exposure_multiplier = 2.0_f32.powf(exposure);
+        if params.exposure != 0.0 {
+            let exposure_multiplier = 2.0_f32.powf(params.exposure);
             rf *= exposure_multiplier;
             gf *= exposure_multiplier;
             bf *= exposure_multiplier;
         }
 
-        if brightness != 0.0 {
-            let brightness_adjust = brightness / 100.0;
+        if params.brightness != 0.0 {
+            let brightness_adjust = params.brightness / 100.0;
             rf += brightness_adjust;
             gf += brightness_adjust;
             bf += brightness_adjust;
         }
 
-        if contrast != 1.0 {
-            rf = (rf - 0.5) * contrast + 0.5;
-            gf = (gf - 0.5) * contrast + 0.5;
-            bf = (bf - 0.5) * contrast + 0.5;
+        if params.contrast != 1.0 {
+            rf = (rf - 0.5) * params.contrast + 0.5;
+            gf = (gf - 0.5) * params.contrast + 0.5;
+            bf = (bf - 0.5) * params.contrast + 0.5;
         }
 
-        if saturation != 1.0 {
+        if params.saturation != 1.0 {
             let gray = 0.299 * rf + 0.587 * gf + 0.114 * bf;
-            rf = gray + (rf - gray) * saturation;
-            gf = gray + (gf - gray) * saturation;
-            bf = gray + (bf - gray) * saturation;
+            rf = gray + (rf - gray) * params.saturation;
+            gf = gray + (gf - gray) * params.saturation;
+            bf = gray + (bf - gray) * params.saturation;
         }
 
         let new_r = (rf.clamp(0.0, 1.0) * 255.0) as u8;
@@ -171,6 +150,26 @@ pub fn save_image(img: &DynamicImage, output_path: &Path, format: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::curve::{Curve, Keyframe};
+    use crate::project::{ColorGrade, CropSettings, ExportSettings, Project, PROJECT_VERSION};
+    use std::path::PathBuf;
+
+    fn test_project() -> Project {
+        Project {
+            version: PROJECT_VERSION,
+            input: PathBuf::from("frames"),
+            frame_range: None,
+            color: ColorGrade::default(),
+            crop: None,
+            export: ExportSettings {
+                output: PathBuf::from("out"),
+                format: "jpg".to_string(),
+                fps: 24,
+                quality: 20,
+                resolution: None,
+            },
+        }
+    }
 
     #[test]
     fn frame_padding_widths() {
@@ -190,43 +189,45 @@ mod tests {
     }
 
     #[test]
-    fn adjustments_identity_keeps_pixels() {
-        let mut img = ImageBuffer::new(4, 4);
-        for (_, _, p) in img.enumerate_pixels_mut() {
-            *p = Rgb([100u8, 150u8, 200u8]);
-        }
-        let img = DynamicImage::ImageRgb8(img);
-        let out = apply_adjustments(img, &ImageAdjustments::default(), 0, 1).unwrap();
-        let out = out.to_rgb8();
+    fn identity_render_keeps_pixels() {
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(4, 4, Rgb([100, 150, 200])));
+        let out = render_frame(img, &test_project(), 0).unwrap().to_rgb8();
         assert_eq!(out.dimensions(), (4, 4));
         assert_eq!(out.get_pixel(0, 0).0, [100, 150, 200]);
     }
 
     #[test]
     fn exposure_one_stop_brightens() {
-        let mut img = ImageBuffer::new(2, 2);
-        for (_, _, p) in img.enumerate_pixels_mut() {
-            *p = Rgb([64u8, 64u8, 64u8]);
-        }
-        let adjustments = ImageAdjustments {
-            exposure: vec![1.0],
-            ..Default::default()
-        };
-        let out = apply_adjustments(DynamicImage::ImageRgb8(img), &adjustments, 0, 1)
-            .unwrap()
-            .to_rgb8();
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(2, 2, Rgb([64, 64, 64])));
+        let mut project = test_project();
+        project.color.exposure = Curve::Constant(1.0);
+        let out = render_frame(img, &project, 0).unwrap().to_rgb8();
         assert_eq!(out.get_pixel(0, 0).0, [128, 128, 128]);
+    }
+
+    #[test]
+    fn keyframed_exposure_varies_per_frame() {
+        let mut project = test_project();
+        project.color.exposure =
+            Curve::Keyframed(vec![Keyframe::new(0, 0.0), Keyframe::new(10, 1.0)]);
+
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(2, 2, Rgb([64, 64, 64])));
+        let at_start = render_frame(img.clone(), &project, 0).unwrap().to_rgb8();
+        let at_end = render_frame(img, &project, 10).unwrap().to_rgb8();
+        assert_eq!(at_start.get_pixel(0, 0).0, [64, 64, 64]);
+        assert_eq!(at_end.get_pixel(0, 0).0, [128, 128, 128]);
     }
 
     #[test]
     fn crop_reduces_dimensions() {
         let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(200, 200, Rgb([10, 20, 30])));
-        let adjustments = ImageAdjustments {
-            crop: Some("120:110:10:20".to_string()),
-            ..Default::default()
-        };
-        let out = apply_adjustments(img, &adjustments, 0, 1).unwrap();
-        // 120/110 are <= 100? No: width 120 > 100 -> pixels; height 110 > 100 -> pixels.
+        let mut project = test_project();
+        project.crop = Some(CropSettings {
+            window: "120:110:10:20".to_string(),
+            offset_x: Curve::Constant(0.0),
+            offset_y: Curve::Constant(0.0),
+        });
+        let out = render_frame(img, &project, 0).unwrap();
         assert_eq!(out.to_rgb8().dimensions(), (120, 110));
     }
 }
