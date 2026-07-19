@@ -74,6 +74,9 @@ impl<'a> ColorParams<'a> {
             if let Some(ref hg) = analysis.holy_grail {
                 exposure += hg.effective(frame as usize);
             }
+            if let Some(ref deflicker) = analysis.deflicker {
+                exposure += deflicker.offset(frame as usize);
+            }
         }
 
         Self {

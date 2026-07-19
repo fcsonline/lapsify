@@ -284,6 +284,92 @@ fn project_dump_prints_valid_project_json() {
 }
 
 #[test]
+fn deflicker_flattens_synthetic_exposure_jitter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("frames");
+    fs::create_dir_all(&input).unwrap();
+
+    // Constant scene with strong deterministic per-frame exposure jitter.
+    let to_srgb = |l: f32| -> u8 {
+        let v = if l <= 0.0031308 {
+            12.92 * l
+        } else {
+            1.055 * l.powf(1.0 / 2.4) - 0.055
+        };
+        (v.clamp(0.0, 1.0) * 255.0).round() as u8
+    };
+    let mut state: u32 = 42;
+    for i in 0..24 {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        let jitter_ev = ((state >> 16) as f32 / 65535.0 - 0.5) * 0.6; // +-0.3 EV
+        let lin = 0.18 * 2.0_f32.powf(jitter_ev);
+        let v = to_srgb(lin);
+        ImageBuffer::from_pixel(64, 48, Rgb([v, v, v]))
+            .save(input.join(format!("f_{i:03}.png")))
+            .unwrap();
+    }
+
+    let project_path = tmp.path().join("project.json");
+    let project = serde_json::json!({
+        "version": 1,
+        "input": input.to_str().unwrap(),
+        "export": { "output": tmp.path().join("out").to_str().unwrap(), "format": "jpg" }
+    });
+    fs::write(&project_path, project.to_string()).unwrap();
+
+    lapsify()
+        .arg("deflicker")
+        .args(["-p", project_path.to_str().unwrap()])
+        .args(["--smoothing", "12"])
+        .assert()
+        .success();
+
+    let saved: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&project_path).unwrap()).unwrap();
+    let layer = &saved["analysis"]["deflicker"];
+    assert_eq!(layer["converged"], true);
+    assert!(layer["passes_run"].as_u64().unwrap() <= 3);
+
+    // The corrections must roughly invert the injected jitter: after
+    // correction, developed luminance is near-constant, so offsets span
+    // close to the injected +-0.3 EV.
+    let offsets: Vec<f64> = layer["offsets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let spread = offsets.iter().cloned().fold(f64::MIN, f64::max)
+        - offsets.iter().cloned().fold(f64::MAX, f64::min);
+    assert!(
+        spread > 0.3,
+        "offsets should span a large part of the injected jitter, got {spread}"
+    );
+
+    // Re-running must be idempotent: same target, near-zero further change.
+    lapsify()
+        .arg("deflicker")
+        .args(["-p", project_path.to_str().unwrap()])
+        .args(["--smoothing", "12"])
+        .assert()
+        .success();
+    let saved2: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&project_path).unwrap()).unwrap();
+    let offsets2: Vec<f64> = saved2["analysis"]["deflicker"]["offsets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    for (a, b) in offsets.iter().zip(&offsets2) {
+        assert!(
+            (a - b).abs() < 0.05,
+            "re-run changed offsets: {a} vs {b} (not idempotent)"
+        );
+    }
+}
+
+#[test]
 fn keyframed_crop_video_encodes_fixed_size() {
     if !ffmpeg_available() {
         eprintln!("skipping: ffmpeg not available");

@@ -55,6 +55,57 @@ fn build_command() -> Command {
             ))),
     )
     .subcommand(
+        render_args(Command::new("deflicker").about(
+            "Measure developed luminance, smooth it into a target curve and correct each frame toward it",
+        ))
+        .arg(
+            Arg::new("smoothing")
+                .long("smoothing")
+                .value_name("FRAMES")
+                .help("Low-pass window in frames for the target curve: flicker shorter than this is removed, longer brightness changes are kept")
+                .default_value("30"),
+        )
+        .arg(
+            Arg::new("region")
+                .long("region")
+                .value_name("X,Y,W,H")
+                .help("Restrict measurement to a normalized source-image region (0..1 fractions)"),
+        )
+        .arg(
+            Arg::new("passes")
+                .long("passes")
+                .value_name("N")
+                .help("Maximum correction passes")
+                .default_value("3"),
+        )
+        .arg(
+            Arg::new("threshold")
+                .long("threshold")
+                .value_name("EV")
+                .help("Per-frame convergence threshold in EV (values below ~0.02 chase 8-bit quantization noise)")
+                .default_value("0.03"),
+        )
+        .arg(
+            Arg::new("measure-dim")
+                .long("measure-dim")
+                .value_name("PIXELS")
+                .help("Downscale the long edge to this size before measuring")
+                .default_value("256"),
+        )
+        .arg(
+            Arg::new("refine")
+                .long("refine")
+                .num_args(0)
+                .help("Keep the stored target curve and only refine the corrections"),
+        )
+        .arg(
+            Arg::new("reset")
+                .long("reset")
+                .num_args(0)
+                .help("Remove the deflicker layer from the project and exit"),
+        ),
+    )
+    .subcommand(
         Command::new("analyze")
             .about("Analysis passes that write results back into the project file")
             .subcommand_required(true)
@@ -339,6 +390,12 @@ fn render_args(cmd: Command) -> Command {
                 .help("Ignore the holy-grail exposure compensation layer for this run (A/B comparison)"),
         )
         .arg(
+            Arg::new("no-deflicker")
+                .long("no-deflicker")
+                .num_args(0)
+                .help("Ignore the deflicker correction layer for this run (A/B comparison)"),
+        )
+        .arg(
             Arg::new("offset-y")
                 .allow_hyphen_values(true)
                 .long("offset-y")
@@ -358,6 +415,11 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
     if matches.get_flag("no-holy-grail") {
         if let Some(ref mut analysis) = project.analysis {
             analysis.holy_grail = None;
+        }
+    }
+    if matches.get_flag("no-deflicker") {
+        if let Some(ref mut analysis) = project.analysis {
+            analysis.deflicker = None;
         }
     }
     Ok(project)
@@ -564,6 +626,7 @@ pub fn run() -> Result<()> {
             Some(("dump", dump)) => run_project_dump(dump),
             _ => unreachable!("subcommand_required"),
         },
+        Some(("deflicker", sub)) => run_deflicker_cmd(sub),
         Some(("analyze", sub)) => match sub.subcommand() {
             Some(("luminance", lum)) => run_analyze_luminance(lum),
             Some(("holygrail", hg)) => run_analyze_holygrail(hg),
@@ -641,6 +704,102 @@ fn run_analyze_luminance(matches: &ArgMatches) -> Result<()> {
 
     reporter.report(ProgressEvent::Done {
         output: written,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
+}
+
+fn run_deflicker_cmd(matches: &ArgMatches) -> Result<()> {
+    use crate::analysis::deflicker::{run_deflicker, DeflickerOptions};
+    use crate::analysis::luminance::parse_region;
+    use crate::analysis::Analysis;
+    use crate::progress::ProgressEvent;
+
+    let project_path = matches
+        .get_one::<String>("project")
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            LapsifyError::message(
+                "deflicker stores its corrections in the project file; pass --project <FILE>",
+            )
+        })?;
+
+    // Load the file directly (not via flag overrides) so what is written
+    // back is exactly the stored project plus the deflicker layer.
+    let mut project = Project::from_json_file(&project_path)?;
+    project.validate()?;
+
+    let reporter = match matches.get_one::<String>("progress").unwrap().as_str() {
+        "json" => ProgressReporter::json(),
+        _ => ProgressReporter::human(),
+    };
+
+    if matches.get_flag("reset") {
+        if let Some(ref mut analysis) = project.analysis {
+            analysis.deflicker = None;
+        }
+        project.save_atomic(&project_path)?;
+        reporter.report(ProgressEvent::Done {
+            output: project_path,
+            elapsed_ms: 0,
+        });
+        return Ok(());
+    }
+
+    let opts = DeflickerOptions {
+        smoothing_frames: matches
+            .get_one::<String>("smoothing")
+            .unwrap()
+            .parse::<u32>()
+            .map_err(|_| LapsifyError::message("Invalid smoothing value"))?,
+        region: matches
+            .get_one::<String>("region")
+            .map(|s| parse_region(s))
+            .transpose()?,
+        max_passes: matches
+            .get_one::<String>("passes")
+            .unwrap()
+            .parse::<u32>()
+            .map_err(|_| LapsifyError::message("Invalid passes value"))?,
+        threshold_ev: matches
+            .get_one::<String>("threshold")
+            .unwrap()
+            .parse::<f32>()
+            .map_err(|_| LapsifyError::message("Invalid threshold value"))?,
+        measure_dim: matches
+            .get_one::<String>("measure-dim")
+            .unwrap()
+            .parse::<u32>()
+            .map_err(|_| LapsifyError::message("Invalid measure-dim value"))?,
+        refine: matches.get_flag("refine"),
+    };
+
+    let image_files = list_images(&project.input)?;
+    let (width, height) = scan_dimensions(&image_files)?;
+    reporter.report(ProgressEvent::Start {
+        total_frames: image_files.len(),
+        width,
+        height,
+    });
+
+    let start = Instant::now();
+    let layer = run_deflicker(&project, &image_files, &opts, &reporter)?;
+
+    if !layer.converged {
+        reporter.report(ProgressEvent::Warning {
+            message: format!(
+                "did not fully converge after {} pass(es); re-run or raise --passes",
+                layer.passes_run
+            ),
+        });
+    }
+
+    let analysis = project.analysis.get_or_insert_with(Analysis::default);
+    analysis.deflicker = Some(layer);
+    project.save_atomic(&project_path)?;
+
+    reporter.report(ProgressEvent::Done {
+        output: project_path,
         elapsed_ms: start.elapsed().as_millis() as u64,
     });
     Ok(())

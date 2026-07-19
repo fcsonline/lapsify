@@ -27,6 +27,12 @@ pub enum ProgressEvent {
         done: usize,
         total: usize,
     },
+    /// One completed deflicker correction pass.
+    DeflickerPass {
+        pass: u32,
+        frames_corrected: usize,
+        max_delta_ev: f32,
+    },
     Done {
         output: PathBuf,
         elapsed_ms: u64,
@@ -76,6 +82,18 @@ impl ProgressReporter {
                         output.display(),
                         *elapsed_ms as f64 / 1000.0
                     );
+                }
+                ProgressEvent::DeflickerPass {
+                    pass,
+                    frames_corrected,
+                    max_delta_ev,
+                } => {
+                    bar.suspend(|| {
+                        eprintln!(
+                            "Pass {pass}: corrected {frames_corrected} frame(s), max delta {max_delta_ev:.3} EV"
+                        )
+                    });
+                    bar.set_position(0);
                 }
                 ProgressEvent::Warning { message } => {
                     bar.suspend(|| eprintln!("Warning: {message}"));

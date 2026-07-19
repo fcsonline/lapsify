@@ -6,9 +6,11 @@
 //! analysis command overwrites its layer wholesale (idempotent by
 //! construction).
 
+pub mod deflicker;
 pub mod holygrail;
 pub mod luminance;
 
+pub use deflicker::DeflickerLayer;
 pub use holygrail::HolyGrailLayer;
 
 use std::path::PathBuf;
@@ -32,6 +34,9 @@ pub struct Analysis {
     /// Exposure compensation for in-camera exposure changes, from EXIF.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holy_grail: Option<HolyGrailLayer>,
+    /// Per-frame exposure corrections from visual deflicker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deflicker: Option<DeflickerLayer>,
     /// Capture timestamps in unix epoch milliseconds, one per frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture_times_ms: Option<Vec<i64>>,
