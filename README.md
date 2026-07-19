@@ -73,10 +73,17 @@ deprecated.
 - `-p, --project <FILE>`: JSON project file; other flags override its values
 - `-i, --input <DIR>`: Input directory containing images
 - `-o, --output <DIR>`: Output directory for processed files
-- `-e, --exposure <STOPS>`: Exposure in EV stops (-3.0 to +3.0)
+- `-e, --exposure <STOPS>`: Exposure in EV stops (-3.0 to +3.0), applied in linear light
+- `--temperature <VALUE>`: White balance temperature, -100 (cool) to +100 (warm)
+- `--tint <VALUE>`: White balance tint, -100 (green) to +100 (magenta)
 - `-b, --brightness <VALUE>`: Brightness adjustment (-100 to +100)
 - `-c, --contrast <VALUE>`: Contrast multiplier (0.1 to 3.0)
+- `--highlights <VALUE>`, `--shadows <VALUE>`: Recover/boost bright and dark tones (-100 to +100)
+- `--whites <VALUE>`, `--blacks <VALUE>`: White/black point adjustments (-100 to +100)
+- `--gamma <VALUE>`: Midtone gamma (0.2 to 5.0, 1.0 = neutral)
 - `-s, --saturation <VALUE>`: Saturation multiplier (0.0 to 2.0)
+- `--vibrance <VALUE>`: Saturation boost weighted toward muted colors (-100 to +100)
+- Tone curve: project-file only — `"tone_curve": { "points": [[0,0],[0.25,0.15],[1,1]] }`
 - `--crop <WIDTH:HEIGHT:X:Y>`: Crop window (pixels, or percentages with `%`)
 - `--offset-x <PIXELS>`, `--offset-y <PIXELS>`: Crop window offsets over time
 - `-f, --format <FORMAT>`: jpg, png, tiff (images) or mp4, mov, avi (video)

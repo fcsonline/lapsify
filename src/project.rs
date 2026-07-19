@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::color::ToneCurve;
 use crate::crop::CropTrack;
 use crate::curve::Curve;
 use crate::error::{LapsifyError, Result};
@@ -32,21 +33,49 @@ pub struct Project {
 pub struct ColorGrade {
     /// Exposure in EV stops.
     pub exposure: Curve,
+    /// White balance temperature, -100 (cool) to +100 (warm).
+    pub temperature: Curve,
+    /// White balance tint, -100 (green) to +100 (magenta).
+    pub tint: Curve,
     /// Brightness offset, -100 to +100.
     pub brightness: Curve,
     /// Contrast multiplier around mid-gray.
     pub contrast: Curve,
+    /// Highlight recovery/boost, -100 to +100.
+    pub highlights: Curve,
+    /// Shadow lift/crush, -100 to +100.
+    pub shadows: Curve,
+    /// White point adjustment, -100 to +100.
+    pub whites: Curve,
+    /// Black point adjustment, -100 to +100.
+    pub blacks: Curve,
+    /// Midtone gamma, 0.2 to 5.0 (1.0 = neutral).
+    pub gamma: Curve,
     /// Saturation multiplier.
     pub saturation: Curve,
+    /// Vibrance, -100 to +100.
+    pub vibrance: Curve,
+    /// Optional parametric tone curve (static across the clip).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone_curve: Option<ToneCurve>,
 }
 
 impl Default for ColorGrade {
     fn default() -> Self {
         Self {
             exposure: Curve::Constant(0.0),
+            temperature: Curve::Constant(0.0),
+            tint: Curve::Constant(0.0),
             brightness: Curve::Constant(0.0),
             contrast: Curve::Constant(1.0),
+            highlights: Curve::Constant(0.0),
+            shadows: Curve::Constant(0.0),
+            whites: Curve::Constant(0.0),
+            blacks: Curve::Constant(0.0),
+            gamma: Curve::Constant(1.0),
             saturation: Curve::Constant(1.0),
+            vibrance: Curve::Constant(0.0),
+            tone_curve: None,
         }
     }
 }
@@ -145,19 +174,28 @@ impl Project {
 
     /// Validate curve structure and parameter ranges.
     pub fn validate(&self) -> Result<()> {
-        self.color.exposure.validate("exposure")?;
-        self.color.brightness.validate("brightness")?;
-        self.color.contrast.validate("contrast")?;
-        self.color.saturation.validate("saturation")?;
-
-        self.color.exposure.validate_range("exposure", -3.0, 3.0)?;
-        self.color
-            .brightness
-            .validate_range("brightness", -100.0, 100.0)?;
-        self.color.contrast.validate_range("contrast", 0.1, 3.0)?;
-        self.color
-            .saturation
-            .validate_range("saturation", 0.0, 2.0)?;
+        let color = &self.color;
+        let curves: [(&'static str, &Curve, f32, f32); 12] = [
+            ("exposure", &color.exposure, -3.0, 3.0),
+            ("temperature", &color.temperature, -100.0, 100.0),
+            ("tint", &color.tint, -100.0, 100.0),
+            ("brightness", &color.brightness, -100.0, 100.0),
+            ("contrast", &color.contrast, 0.1, 3.0),
+            ("highlights", &color.highlights, -100.0, 100.0),
+            ("shadows", &color.shadows, -100.0, 100.0),
+            ("whites", &color.whites, -100.0, 100.0),
+            ("blacks", &color.blacks, -100.0, 100.0),
+            ("gamma", &color.gamma, 0.2, 5.0),
+            ("saturation", &color.saturation, 0.0, 2.0),
+            ("vibrance", &color.vibrance, -100.0, 100.0),
+        ];
+        for (name, curve, min, max) in curves {
+            curve.validate(name)?;
+            curve.validate_range(name, min, max)?;
+        }
+        if let Some(ref tone_curve) = color.tone_curve {
+            tone_curve.validate()?;
+        }
 
         if let Some(ref crop) = self.crop {
             crop.validate()?;

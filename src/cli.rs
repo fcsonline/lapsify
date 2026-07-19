@@ -118,6 +118,69 @@ fn render_args(cmd: Command) -> Command {
                 .default_value("1.0"),
         )
         .arg(
+            Arg::new("temperature")
+                .allow_hyphen_values(true)
+                .long("temperature")
+                .value_name("VALUE")
+                .help("White balance temperature, -100 (cool) to +100 (warm). Single value or comma-separated array")
+                .default_value("0.0"),
+        )
+        .arg(
+            Arg::new("tint")
+                .allow_hyphen_values(true)
+                .long("tint")
+                .value_name("VALUE")
+                .help("White balance tint, -100 (green) to +100 (magenta). Single value or comma-separated array")
+                .default_value("0.0"),
+        )
+        .arg(
+            Arg::new("highlights")
+                .allow_hyphen_values(true)
+                .long("highlights")
+                .value_name("VALUE")
+                .help("Highlight recovery/boost, -100 to +100. Single value or comma-separated array")
+                .default_value("0.0"),
+        )
+        .arg(
+            Arg::new("shadows")
+                .allow_hyphen_values(true)
+                .long("shadows")
+                .value_name("VALUE")
+                .help("Shadow lift/crush, -100 to +100. Single value or comma-separated array")
+                .default_value("0.0"),
+        )
+        .arg(
+            Arg::new("whites")
+                .allow_hyphen_values(true)
+                .long("whites")
+                .value_name("VALUE")
+                .help("White point adjustment, -100 to +100. Single value or comma-separated array")
+                .default_value("0.0"),
+        )
+        .arg(
+            Arg::new("blacks")
+                .allow_hyphen_values(true)
+                .long("blacks")
+                .value_name("VALUE")
+                .help("Black point adjustment, -100 to +100. Single value or comma-separated array")
+                .default_value("0.0"),
+        )
+        .arg(
+            Arg::new("gamma")
+                .long("gamma")
+                .value_name("VALUE")
+                .help("Midtone gamma, 0.2 to 5.0 (1.0 = neutral). Single value or comma-separated array")
+                .default_value("1.0"),
+        )
+        .arg(
+            Arg::new("vibrance")
+                .allow_hyphen_values(true)
+                .long("vibrance")
+                .value_name("VALUE")
+                .help("Vibrance, -100 to +100: saturation boost weighted toward muted colors. Single value or comma-separated array")
+                .default_value("0.0"),
+        )
+        .arg(
             Arg::new("format")
                 .short('f')
                 .long("format")
@@ -316,9 +379,22 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
 
     // Legacy comma-array flags are anchored to evenly spaced keyframes over
     // the full sequence, so conversion needs the frame count.
-    let legacy_curves = ["exposure", "brightness", "contrast", "saturation"]
-        .iter()
-        .any(|name| overrides(name))
+    let legacy_curves = [
+        "exposure",
+        "temperature",
+        "tint",
+        "brightness",
+        "contrast",
+        "highlights",
+        "shadows",
+        "whites",
+        "blacks",
+        "gamma",
+        "saturation",
+        "vibrance",
+    ]
+    .iter()
+    .any(|name| overrides(name))
         || is_explicit(matches, "crop")
         || is_explicit(matches, "offset-x")
         || is_explicit(matches, "offset-y");
@@ -336,17 +412,25 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
             Ok(curve_from_legacy_array(&values, total_frames))
         };
 
-        if overrides("exposure") {
-            project.color.exposure = legacy("exposure")?;
-        }
-        if overrides("brightness") {
-            project.color.brightness = legacy("brightness")?;
-        }
-        if overrides("contrast") {
-            project.color.contrast = legacy("contrast")?;
-        }
-        if overrides("saturation") {
-            project.color.saturation = legacy("saturation")?;
+        let color = &mut project.color;
+        let fields: [(&str, &mut Curve); 12] = [
+            ("exposure", &mut color.exposure),
+            ("temperature", &mut color.temperature),
+            ("tint", &mut color.tint),
+            ("brightness", &mut color.brightness),
+            ("contrast", &mut color.contrast),
+            ("highlights", &mut color.highlights),
+            ("shadows", &mut color.shadows),
+            ("whites", &mut color.whites),
+            ("blacks", &mut color.blacks),
+            ("gamma", &mut color.gamma),
+            ("saturation", &mut color.saturation),
+            ("vibrance", &mut color.vibrance),
+        ];
+        for (name, field) in fields {
+            if !from_file || is_explicit(matches, name) {
+                *field = legacy(name)?;
+            }
         }
 
         if is_explicit(matches, "crop") {

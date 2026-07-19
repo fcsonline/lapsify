@@ -64,6 +64,7 @@ fn test_project() -> Project {
             brightness: Curve::Constant(5.0),
             contrast: Curve::Constant(1.2),
             saturation: Curve::Constant(1.3),
+            ..ColorGrade::default()
         },
         crop: Some(CropTrack::from_rect(CropRect {
             x: 0.125,
