@@ -34,6 +34,10 @@ pub struct StudioApp {
     // Curve panel state
     pub selected_param: ParamId,
     pub dragging_keyframe: Option<usize>,
+    pub show_source_luma: bool,
+    pub show_developed_luma: bool,
+    pub show_compensation: bool,
+    pub show_deflicker: bool,
 
     // Debug self-test state
     selftest_started: bool,
@@ -55,6 +59,10 @@ impl StudioApp {
             error: None,
             selected_param: ParamId::Exposure,
             dragging_keyframe: None,
+            show_source_luma: true,
+            show_developed_luma: false,
+            show_compensation: false,
+            show_deflicker: false,
             selftest_started: false,
         }
     }

@@ -112,6 +112,17 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
             } else {
                 ui.label(egui::RichText::new(&app.status).weak());
             }
+            if app.doc.is_some() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            "curve: double-click adds a keyframe · drag moves · right-click deletes",
+                        )
+                        .weak()
+                        .size(11.0),
+                    );
+                });
+            }
         });
     });
 }

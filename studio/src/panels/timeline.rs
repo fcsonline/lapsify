@@ -1,7 +1,12 @@
 //! Bottom panel: frame scrubber plus the layer curve graph with editable
 //! keyframes for the selected parameter.
 
-use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints, Points, VLine};
+use egui_plot::{Line, Plot, PlotPoint, PlotPoints, Points, VLine};
+
+const SOURCE_COLOR: egui::Color32 = egui::Color32::from_rgb(90, 160, 255);
+const DEVELOPED_COLOR: egui::Color32 = egui::Color32::from_rgb(240, 120, 200);
+const COMPENSATION_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 165, 60);
+const DEFLICKER_COLOR: egui::Color32 = egui::Color32::from_rgb(90, 200, 120);
 use lapsify::Curve;
 
 use crate::app::StudioApp;
@@ -64,13 +69,53 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                             }
                         }
                     });
-                ui.label(
-                    egui::RichText::new(
-                        "double-click: add keyframe · drag: move · right-click: delete",
-                    )
-                    .weak()
-                    .size(11.0),
-                );
+
+                // Layer visibility chips, color-coded to the plot lines and
+                // shown only for layers that exist. They double as a legend.
+                let analysis = doc.project.analysis.as_ref();
+                let mut chips: Vec<(&str, egui::Color32, &mut bool, bool)> = vec![
+                    (
+                        "Source",
+                        SOURCE_COLOR,
+                        &mut app.show_source_luma,
+                        analysis.is_some_and(|a| a.source_luminance.is_some()),
+                    ),
+                    (
+                        "Developed",
+                        DEVELOPED_COLOR,
+                        &mut app.show_developed_luma,
+                        analysis.is_some_and(|a| a.developed_luminance.is_some()),
+                    ),
+                    (
+                        "Compensation",
+                        COMPENSATION_COLOR,
+                        &mut app.show_compensation,
+                        analysis.is_some_and(|a| a.holy_grail.is_some()),
+                    ),
+                    (
+                        "Deflicker",
+                        DEFLICKER_COLOR,
+                        &mut app.show_deflicker,
+                        analysis.is_some_and(|a| a.deflicker.is_some()),
+                    ),
+                ];
+                if chips.iter().any(|(_, _, _, exists)| *exists) {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Layers:").color(crate::theme::TEXT_WEAK));
+                    for (name, color, on, exists) in chips.iter_mut() {
+                        if !*exists {
+                            continue;
+                        }
+                        let text = egui::RichText::new(*name).color(if **on {
+                            *color
+                        } else {
+                            crate::theme::TEXT_WEAK
+                        });
+                        if ui.selectable_label(**on, text).clicked() {
+                            **on = !**on;
+                        }
+                    }
+                }
             });
 
             // ---- curve plot -------------------------------------------
@@ -82,7 +127,6 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
             let mut edited: Option<EditAction> = None;
 
             let plot = Plot::new("layer_curves")
-                .legend(Legend::default().position(egui_plot::Corner::LeftTop))
                 .allow_drag(false)
                 .allow_zoom(false)
                 .allow_scroll(false)
@@ -93,43 +137,57 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                 .show_y(true);
 
             plot.show(ui, |plot_ui| {
-                // Measured luminance layers (relative EV).
+                // Background layers: thin and dimmed so the edited curve
+                // stays the focus. Each is opt-in via its chip.
+                let faint = |c: egui::Color32| c.gamma_multiply(0.55);
                 if let Some(analysis) = &analysis {
-                    if let Some(series) = &analysis.source_luminance {
-                        plot_ui.line(
-                            Line::new(
-                                "source luminance",
-                                PlotPoints::from(relative_ev(&series.values)),
-                            )
-                            .color(egui::Color32::from_rgb(90, 160, 255)),
-                        );
+                    if app.show_source_luma {
+                        if let Some(series) = &analysis.source_luminance {
+                            plot_ui.line(
+                                Line::new(
+                                    "source luminance",
+                                    PlotPoints::from(relative_ev(&series.values)),
+                                )
+                                .color(faint(SOURCE_COLOR))
+                                .width(1.0),
+                            );
+                        }
                     }
-                    if let Some(series) = &analysis.developed_luminance {
-                        plot_ui.line(
-                            Line::new(
-                                "developed luminance",
-                                PlotPoints::from(relative_ev(&series.values)),
-                            )
-                            .color(egui::Color32::from_rgb(240, 120, 200)),
-                        );
+                    if app.show_developed_luma {
+                        if let Some(series) = &analysis.developed_luminance {
+                            plot_ui.line(
+                                Line::new(
+                                    "developed luminance",
+                                    PlotPoints::from(relative_ev(&series.values)),
+                                )
+                                .color(faint(DEVELOPED_COLOR))
+                                .width(1.0),
+                            );
+                        }
                     }
-                    if let Some(hg) = &analysis.holy_grail {
-                        let points: Vec<[f64; 2]> = (0..frame_count)
-                            .map(|i| [i as f64, hg.effective(i) as f64])
-                            .collect();
-                        plot_ui.line(
-                            Line::new("EXIF compensation", PlotPoints::from(points))
-                                .color(egui::Color32::from_rgb(255, 165, 60)),
-                        );
+                    if app.show_compensation {
+                        if let Some(hg) = &analysis.holy_grail {
+                            let points: Vec<[f64; 2]> = (0..frame_count)
+                                .map(|i| [i as f64, hg.effective(i) as f64])
+                                .collect();
+                            plot_ui.line(
+                                Line::new("EXIF compensation", PlotPoints::from(points))
+                                    .color(faint(COMPENSATION_COLOR))
+                                    .width(1.0),
+                            );
+                        }
                     }
-                    if let Some(deflicker) = &analysis.deflicker {
-                        let points: Vec<[f64; 2]> = (0..frame_count)
-                            .map(|i| [i as f64, deflicker.offset(i) as f64])
-                            .collect();
-                        plot_ui.line(
-                            Line::new("deflicker", PlotPoints::from(points))
-                                .color(egui::Color32::from_rgb(90, 200, 120)),
-                        );
+                    if app.show_deflicker {
+                        if let Some(deflicker) = &analysis.deflicker {
+                            let points: Vec<[f64; 2]> = (0..frame_count)
+                                .map(|i| [i as f64, deflicker.offset(i) as f64])
+                                .collect();
+                            plot_ui.line(
+                                Line::new("deflicker", PlotPoints::from(points))
+                                    .color(faint(DEFLICKER_COLOR))
+                                    .width(1.0),
+                            );
+                        }
                     }
                 }
 
@@ -140,7 +198,7 @@ pub fn show(app: &mut StudioApp, ctx: &egui::Context) {
                 plot_ui.line(
                     Line::new(param.label(), PlotPoints::from(sampled))
                         .color(crate::theme::ACCENT)
-                        .width(2.0),
+                        .width(2.5),
                 );
 
                 // Playhead.
