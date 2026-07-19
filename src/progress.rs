@@ -49,9 +49,16 @@ pub enum ProgressEvent {
 pub enum ProgressReporter {
     Human(ProgressBar),
     Json,
+    /// Deliver events to an arbitrary callback — how embedding applications
+    /// (a GUI, tests) receive progress without touching a terminal.
+    Callback(Box<dyn Fn(ProgressEvent) + Send + Sync>),
 }
 
 impl ProgressReporter {
+    pub fn callback(f: impl Fn(ProgressEvent) + Send + Sync + 'static) -> Self {
+        Self::Callback(Box::new(f))
+    }
+
     pub fn human() -> Self {
         let bar = ProgressBar::hidden();
         bar.set_style(
@@ -112,6 +119,7 @@ impl ProgressReporter {
                     println!("{line}");
                 }
             }
+            Self::Callback(f) => f(event),
         }
     }
 }

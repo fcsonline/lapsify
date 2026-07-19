@@ -241,6 +241,30 @@ lapsify -i frames/ -o out/ -f mp4 --progress json
 
 Stdout carries only NDJSON events; all human-readable output goes to stderr.
 
+## Lapsify Studio (GUI)
+
+The workspace includes a visual editor built on [egui](https://github.com/emilk/egui)
+that links the engine directly — same pipeline, same project files:
+
+```bash
+cargo run -p lapsify-studio                      # empty editor
+cargo run -p lapsify-studio -- project.json      # open a project
+cargo run -p lapsify-studio -- /path/to/frames   # open a frames folder
+```
+
+- **Preview** of any frame through the real pipeline, updated live as you edit
+- **Keyframe-aware sliders**: a constant parameter edits globally; a keyframed
+  one writes a keyframe at the playhead (click the dot to add/remove keyframes)
+- **Curve panel**: all analysis layers plotted together (source/developed
+  luminance, EXIF compensation, deflicker) with draggable keyframes on any
+  parameter curve — double-click to add, right-click to delete
+- **One-click analysis**: luminance, EXIF compensation, deflicker and keyframe
+  suggestions run on background threads with live progress
+- **Render** to video or stills without leaving the app
+
+Everything the Studio does is stored in the same `project.json` the CLI uses —
+the two are interchangeable mid-project.
+
 ## Library usage
 
 The `lapsify` crate exposes the engine directly:
