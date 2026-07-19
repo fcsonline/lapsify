@@ -30,25 +30,19 @@ pub fn generate_output_filename(input_path: &Path, output_format: &str) -> Strin
     format!("{stem}_processed.{output_format}")
 }
 
-pub fn calculate_frame_padding(total_frames: usize) -> usize {
-    if total_frames == 0 {
-        1
-    } else {
-        total_frames.ilog10() as usize + 1
-    }
-}
-
-pub fn save_image(img: &DynamicImage, output_path: &Path, format: &str) -> Result<()> {
+pub fn save_image(
+    img: &DynamicImage,
+    output_path: &Path,
+    format: &str,
+    jpeg_quality: u8,
+) -> Result<()> {
     match format.to_lowercase().as_str() {
         "jpg" | "jpeg" => {
-            let rgb_img = img.to_rgb8();
-            image::save_buffer(
-                output_path,
-                &rgb_img,
-                rgb_img.width(),
-                rgb_img.height(),
-                image::ExtendedColorType::Rgb8,
-            )?;
+            let file =
+                std::fs::File::create(output_path).map_err(|e| LapsifyError::io(output_path, e))?;
+            let writer = std::io::BufWriter::new(file);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(writer, jpeg_quality);
+            img.to_rgb8().write_with_encoder(encoder)?;
         }
         "png" | "tiff" | "tif" => {
             img.save(output_path)?;
@@ -78,23 +72,12 @@ mod tests {
             frame_range: None,
             color: ColorGrade::default(),
             crop: None,
-            export: ExportSettings {
-                output: PathBuf::from("out"),
-                format: "jpg".to_string(),
-                fps: 24,
-                quality: 20,
-                resolution: None,
+            export: {
+                let mut export = ExportSettings::new(PathBuf::from("out"));
+                export.format = "jpg".to_string();
+                export
             },
         }
-    }
-
-    #[test]
-    fn frame_padding_widths() {
-        assert_eq!(calculate_frame_padding(0), 1);
-        assert_eq!(calculate_frame_padding(9), 1);
-        assert_eq!(calculate_frame_padding(10), 2);
-        assert_eq!(calculate_frame_padding(999), 3);
-        assert_eq!(calculate_frame_padding(1000), 4);
     }
 
     #[test]

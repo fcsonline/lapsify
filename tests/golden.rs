@@ -71,12 +71,10 @@ fn test_project() -> Project {
             width: 0.75,
             height: 0.75,
         })),
-        export: ExportSettings {
-            output: PathBuf::from("unused"),
-            format: "png".to_string(),
-            fps: 24,
-            quality: 20,
-            resolution: None,
+        export: {
+            let mut export = ExportSettings::new(PathBuf::from("unused"));
+            export.format = "png".to_string();
+            export
         },
     }
 }

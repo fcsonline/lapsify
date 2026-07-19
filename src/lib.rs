@@ -4,6 +4,7 @@ pub mod crop;
 pub mod curve;
 pub mod error;
 pub mod export;
+pub mod progress;
 pub mod project;
 pub mod render;
 pub mod source;

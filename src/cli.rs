@@ -10,7 +10,8 @@ use crate::curve::{curve_from_legacy_array, parse_value_array, Curve};
 use crate::error::{LapsifyError, Result};
 use crate::export::images::render_to_images;
 use crate::export::video::render_to_video;
-use crate::project::{ColorGrade, ExportSettings, Project, PROJECT_VERSION};
+use crate::progress::ProgressReporter;
+use crate::project::{Codec, ColorGrade, ExportSettings, Project, PROJECT_VERSION};
 use crate::source::{list_images, scan_dimensions};
 
 fn build_command() -> Command {
@@ -42,6 +43,7 @@ fn build_command() -> Command {
         )
         .arg(
             Arg::new("exposure")
+                .allow_hyphen_values(true)
                 .short('e')
                 .long("exposure")
                 .value_name("STOPS")
@@ -50,6 +52,7 @@ fn build_command() -> Command {
         )
         .arg(
             Arg::new("brightness")
+                .allow_hyphen_values(true)
                 .short('b')
                 .long("brightness")
                 .value_name("VALUE")
@@ -58,6 +61,7 @@ fn build_command() -> Command {
         )
         .arg(
             Arg::new("contrast")
+                .allow_hyphen_values(true)
                 .short('c')
                 .long("contrast")
                 .value_name("VALUE")
@@ -66,6 +70,7 @@ fn build_command() -> Command {
         )
         .arg(
             Arg::new("saturation")
+                .allow_hyphen_values(true)
                 .short('s')
                 .long("saturation")
                 .value_name("VALUE")
@@ -93,8 +98,35 @@ fn build_command() -> Command {
                 .short('q')
                 .long("quality")
                 .value_name("CRF")
-                .help("Video quality (CRF: 0-51, lower = better quality, 18-28 recommended)")
+                .help("Video quality (CRF: 0-51, lower = better quality, 18-28 recommended). Ignored by prores")
                 .default_value("20"),
+        )
+        .arg(
+            Arg::new("codec")
+                .long("codec")
+                .value_name("CODEC")
+                .help("Video codec: h264, h265 or prores (prores requires -f mov)")
+                .default_value("h264"),
+        )
+        .arg(
+            Arg::new("ten-bit")
+                .long("ten-bit")
+                .num_args(0)
+                .help("Encode with 10-bit chroma (h265 and prores only)"),
+        )
+        .arg(
+            Arg::new("jpeg-quality")
+                .long("jpeg-quality")
+                .value_name("QUALITY")
+                .help("JPEG quality for image-sequence output (1-100)")
+                .default_value("90"),
+        )
+        .arg(
+            Arg::new("progress")
+                .long("progress")
+                .value_name("MODE")
+                .help("Progress output: 'human' (progress bar on stderr) or 'json' (NDJSON events on stdout)")
+                .default_value("human"),
         )
         .arg(
             Arg::new("resolution")
@@ -130,12 +162,14 @@ fn build_command() -> Command {
         )
         .arg(
             Arg::new("offset-x")
+                .allow_hyphen_values(true)
                 .long("offset-x")
                 .value_name("PIXELS")
                 .help("X offset for crop window in pixels. Single value or comma-separated array. Examples: '10' (static), '0,20,0,-20' (panning), '0,5,-5,0' (stabilization)"),
         )
         .arg(
             Arg::new("offset-y")
+                .allow_hyphen_values(true)
                 .long("offset-y")
                 .value_name("PIXELS")
                 .help("Y offset for crop window in pixels. Single value or comma-separated array. Examples: '-5' (static), '0,10,0,-10' (panning), '0,-3,3,0' (stabilization)"),
@@ -159,13 +193,9 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
             frame_range: None,
             color: ColorGrade::default(),
             crop: None,
-            export: ExportSettings {
-                output: PathBuf::from(matches.get_one::<String>("output").unwrap()),
-                format: "mp4".to_string(),
-                fps: 24,
-                quality: 20,
-                resolution: None,
-            },
+            export: ExportSettings::new(PathBuf::from(
+                matches.get_one::<String>("output").unwrap(),
+            )),
         },
     };
 
@@ -198,6 +228,22 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
     }
     if is_explicit(matches, "resolution") {
         project.export.resolution = matches.get_one::<String>("resolution").cloned();
+    }
+    if overrides("codec") {
+        project.export.codec = matches
+            .get_one::<String>("codec")
+            .unwrap()
+            .parse::<Codec>()?;
+    }
+    if is_explicit(matches, "ten-bit") {
+        project.export.ten_bit = true;
+    }
+    if overrides("jpeg-quality") {
+        project.export.jpeg_quality = matches
+            .get_one::<String>("jpeg-quality")
+            .unwrap()
+            .parse::<u8>()
+            .map_err(|_| LapsifyError::message("Invalid jpeg-quality value"))?;
     }
 
     let start_frame = matches
@@ -282,14 +328,14 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
 
 fn print_curve(name: &str, curve: &Curve, unit: &str) {
     match curve {
-        Curve::Constant(v) => println!("  {}: {}{}", name.green(), v, unit),
+        Curve::Constant(v) => eprintln!("  {}: {}{}", name.green(), v, unit),
         Curve::Keyframed(keyframes) => {
             let values_str = keyframes
                 .iter()
                 .map(|k| format!("{}@{}{}", k.value, k.frame, unit))
                 .collect::<Vec<_>>()
                 .join(", ");
-            println!("  {}: [{}]", name.green(), values_str);
+            eprintln!("  {}: [{}]", name.green(), values_str);
         }
     }
 }
@@ -321,64 +367,70 @@ pub fn run() -> Result<()> {
         crop.validate_over(image_files.len())?;
     }
 
-    println!("{}", "Processing images with settings:".bold().cyan());
-    print_curve("Exposure", &project.color.exposure, "EV");
-    print_curve("Brightness", &project.color.brightness, "");
-    print_curve("Contrast", &project.color.contrast, "x");
-    print_curve("Saturation", &project.color.saturation, "x");
-
-    if let Some(ref crop) = project.crop {
-        println!("  {}:", "Crop".green());
-        print_curve("  x", &crop.x, "");
-        print_curve("  y", &crop.y, "");
-        print_curve("  width", &crop.width, "");
-        print_curve("  height", &crop.height, "");
-    }
-
-    if threads > 0 {
-        println!("  {}: {} (manual)", "Threads".green(), threads);
-    } else {
-        println!(
-            "  {}: auto-detect ({} available)",
-            "Threads".green(),
-            rayon::current_num_threads()
-        );
-    }
-    if project.is_video_output() {
-        println!(
-            "  {}: {} video at {} fps (CRF {})",
-            "Output".yellow(),
-            project.export.format,
-            project.export.fps,
-            project.export.quality
-        );
-        if let Some(ref res) = project.export.resolution {
-            println!("  {}: {}", "Resolution".yellow(), res);
+    let reporter = match matches.get_one::<String>("progress").unwrap().as_str() {
+        "human" => ProgressReporter::human(),
+        "json" => ProgressReporter::json(),
+        other => {
+            return Err(LapsifyError::message(format!(
+                "Invalid progress mode '{other}' (expected 'human' or 'json')"
+            )))
         }
-    } else {
-        println!(
-            "  {}: {} images",
-            "Output format".yellow(),
-            project.export.format
-        );
-    }
+    };
 
-    if let Some((start, end)) = project.frame_range {
-        println!(
-            "  {}: frames {} to {} ({} frames)",
-            "Frame range".yellow(),
-            start,
-            end,
-            end.saturating_sub(start) + 1
-        );
+    // All human-readable chatter goes to stderr so json mode keeps stdout
+    // clean for NDJSON events.
+    if matches!(reporter, ProgressReporter::Human(_)) {
+        eprintln!("{}", "Processing images with settings:".bold().cyan());
+        print_curve("Exposure", &project.color.exposure, "EV");
+        print_curve("Brightness", &project.color.brightness, "");
+        print_curve("Contrast", &project.color.contrast, "x");
+        print_curve("Saturation", &project.color.saturation, "x");
+
+        if let Some(ref crop) = project.crop {
+            eprintln!("  {}:", "Crop".green());
+            print_curve("  x", &crop.x, "");
+            print_curve("  y", &crop.y, "");
+            print_curve("  width", &crop.width, "");
+            print_curve("  height", &crop.height, "");
+        }
+
+        if project.is_video_output() {
+            eprintln!(
+                "  {}: {} video at {} fps ({:?}, CRF {})",
+                "Output".yellow(),
+                project.export.format,
+                project.export.fps,
+                project.export.codec,
+                project.export.quality
+            );
+            if let Some(ref res) = project.export.resolution {
+                eprintln!("  {}: {}", "Resolution".yellow(), res);
+            }
+        } else {
+            eprintln!(
+                "  {}: {} images",
+                "Output format".yellow(),
+                project.export.format
+            );
+        }
+
+        if let Some((start, end)) = project.frame_range {
+            eprintln!(
+                "  {}: frames {} to {} ({} frames)",
+                "Frame range".yellow(),
+                start,
+                end,
+                end.saturating_sub(start) + 1
+            );
+        }
     }
 
     let start_time = Instant::now();
 
     if project.is_video_output() {
-        render_to_video(&project, start_time)?;
+        render_to_video(&project, &reporter, start_time)?;
     } else {
-        render_to_images(&project, start_time)?;
+        render_to_images(&project, &reporter, start_time)?;
     }
 
     Ok(())

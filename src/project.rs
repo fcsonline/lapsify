@@ -51,6 +51,30 @@ impl Default for ColorGrade {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Codec {
+    #[default]
+    H264,
+    H265,
+    Prores,
+}
+
+impl std::str::FromStr for Codec {
+    type Err = LapsifyError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "h264" | "x264" | "avc" => Ok(Self::H264),
+            "h265" | "x265" | "hevc" => Ok(Self::H265),
+            "prores" => Ok(Self::Prores),
+            other => Err(LapsifyError::message(format!(
+                "Unknown codec '{other}' (expected h264, h265 or prores)"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSettings {
     /// Output directory.
@@ -60,12 +84,20 @@ pub struct ExportSettings {
     pub format: String,
     #[serde(default = "default_fps")]
     pub fps: u32,
-    /// Video quality (CRF, 0-51, lower is better).
+    /// Video quality (CRF, 0-51, lower is better). Ignored by ProRes.
     #[serde(default = "default_quality")]
     pub quality: u32,
     /// Target video resolution, e.g. "1920x1080", "4K".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
+    #[serde(default)]
+    pub codec: Codec,
+    /// Encode with 10-bit chroma (h265 and prores only).
+    #[serde(default)]
+    pub ten_bit: bool,
+    /// JPEG quality for image-sequence output (1-100).
+    #[serde(default = "default_jpeg_quality")]
+    pub jpeg_quality: u8,
 }
 
 fn default_format() -> String {
@@ -78,6 +110,10 @@ fn default_fps() -> u32 {
 
 fn default_quality() -> u32 {
     20
+}
+
+fn default_jpeg_quality() -> u8 {
+    90
 }
 
 impl Project {
@@ -142,8 +178,38 @@ impl Project {
                 ));
             }
         }
+        if !(1..=100).contains(&self.export.jpeg_quality) {
+            return Err(LapsifyError::message(
+                "JPEG quality must be between 1 and 100",
+            ));
+        }
+        if self.export.ten_bit && self.export.codec == Codec::H264 {
+            return Err(LapsifyError::message(
+                "10-bit output requires the h265 or prores codec",
+            ));
+        }
+        if self.export.codec == Codec::Prores && self.export.format != "mov" {
+            return Err(LapsifyError::message(
+                "ProRes requires the mov container (use -f mov)",
+            ));
+        }
 
         Ok(())
+    }
+}
+
+impl ExportSettings {
+    pub fn new(output: PathBuf) -> Self {
+        Self {
+            output,
+            format: default_format(),
+            fps: default_fps(),
+            quality: default_quality(),
+            resolution: None,
+            codec: Codec::default(),
+            ten_bit: false,
+            jpeg_quality: default_jpeg_quality(),
+        }
     }
 }
 
@@ -159,13 +225,7 @@ mod tests {
             frame_range: None,
             color: ColorGrade::default(),
             crop: None,
-            export: ExportSettings {
-                output: PathBuf::from("out"),
-                format: default_format(),
-                fps: default_fps(),
-                quality: default_quality(),
-                resolution: None,
-            },
+            export: ExportSettings::new(PathBuf::from("out")),
         }
     }
 

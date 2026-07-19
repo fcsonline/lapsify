@@ -3,18 +3,27 @@
 
 # Lapsify
 
-A powerful time-lapse image processor written in Rust that can process images with adjustable parameters and create videos.
+A time-lapse processing engine written in Rust: keyframable adjustments over an
+image sequence, rendered to video (via FFmpeg) or processed stills. Usable as a
+CLI or as a Rust library.
 
 ## Features
 
-- **Image Processing**: Apply exposure, brightness, contrast, and saturation adjustments
-- **Cropping**: Crop images with pixel or percentage-based coordinates
-- **Manual Offsets**: Apply X/Y offsets to crop window for manual stabilization
-- **Interpolation**: Smooth transitions between parameter values across frames
-- **Multiple Output Formats**: Generate processed images (JPG, PNG, TIFF) or videos (MP4, MOV, AVI)
-- **Video Creation**: Direct video output using FFmpeg with customizable quality and frame rate
-- **Flexible Parameters**: Support for single values or arrays for smooth transitions
-- **Parallel Processing**: Efficient multi-threaded processing for fast results
+- **Keyframed adjustments**: anchor exposure, brightness, contrast and
+  saturation values to specific frames; smooth monotone interpolation between
+  keyframes (the curve passes through every keyframe, with no overshoot)
+- **Correct color math**: exposure is applied in linear light (real EV stops);
+  the whole tonal chain is baked into a per-frame LUT for speed
+- **Keyframable crop**: a normalized crop window whose position and size can be
+  animated — pans and Ken Burns zooms are just keyframes
+- **Project files**: describe a whole render in JSON; the CLI flags and the
+  project file build the exact same pipeline
+- **Direct video encoding**: frames are piped straight into FFmpeg (no
+  temporary files, no intermediate compression); H.264, H.265 (8/10-bit) and
+  ProRes
+- **Machine-readable progress**: `--progress json` emits NDJSON events on
+  stdout, designed for driving lapsify from another program or UI
+- **Parallel processing**: frames render across all cores with bounded memory
 
 ## Installation
 
@@ -25,27 +34,19 @@ A powerful time-lapse image processor written in Rust that can process images wi
 
 ### Installing with Cargo
 
-The easiest way to install Lapsify is using Cargo:
-
 ```bash
 cargo install lapsify
 ```
 
-This will download, compile, and install the latest version from crates.io.
-
 ### Building from Source
 
-Alternatively, you can build from source:
-
 ```bash
-git clone https://github.com/yourusername/lapsify.git
+git clone https://github.com/fcsonline/lapsify.git
 cd lapsify
 cargo build --release
 ```
 
 ## Usage
-
-### Basic Usage
 
 ```bash
 # Process images to video
@@ -53,166 +54,132 @@ lapsify -i /path/to/images -o /path/to/output -f mp4
 
 # Process images to processed images
 lapsify -i /path/to/images -o /path/to/output -f jpg
+
+# Render from a project file
+lapsify --project project.json
 ```
 
 ### Command Line Options
 
-- `-i, --input <DIR>`: Input directory containing images (required)
-- `-o, --output <DIR>`: Output directory for processed files (required)
-- `-e, --exposure <STOPS>`: Exposure adjustment in EV stops (-3.0 to +3.0)
+- `-p, --project <FILE>`: JSON project file; other flags override its values
+- `-i, --input <DIR>`: Input directory containing images
+- `-o, --output <DIR>`: Output directory for processed files
+- `-e, --exposure <STOPS>`: Exposure in EV stops (-3.0 to +3.0)
 - `-b, --brightness <VALUE>`: Brightness adjustment (-100 to +100)
 - `-c, --contrast <VALUE>`: Contrast multiplier (0.1 to 3.0)
 - `-s, --saturation <VALUE>`: Saturation multiplier (0.0 to 2.0)
-- `--crop <WIDTH:HEIGHT:X:Y>`: Crop parameters in FFmpeg format (e.g., '1000:800:100:50' or '50%:50%:10%:10%')
-- `--offset-x <PIXELS>`: X offset for crop window in pixels. Single value or comma-separated array
-- `--offset-y <PIXELS>`: Y offset for crop window in pixels. Single value or comma-separated array
-- `-f, --format <FORMAT>`: Output format (jpg, png, tiff, mp4, mov, avi)
-- `-r, --fps <RATE>`: Frame rate for video output (1-120 fps)
+- `--crop <WIDTH:HEIGHT:X:Y>`: Crop window (pixels, or percentages with `%`)
+- `--offset-x <PIXELS>`, `--offset-y <PIXELS>`: Crop window offsets over time
+- `-f, --format <FORMAT>`: jpg, png, tiff (images) or mp4, mov, avi (video)
+- `-r, --fps <RATE>`: Video frame rate (1-120)
 - `-q, --quality <CRF>`: Video quality (0-51, lower = better)
-- `--resolution <WIDTHxHEIGHT>`: Output video resolution
-- `-t, --threads <NUM>`: Number of threads to use for processing (default: auto-detect)
+- `--codec <CODEC>`: h264 (default), h265 or prores (prores requires `-f mov`)
+- `--ten-bit`: 10-bit chroma (h265/prores)
+- `--jpeg-quality <1-100>`: JPEG quality for image output (default 90)
+- `--resolution <WIDTHxHEIGHT>`: Fit output within this size (e.g. 1920x1080, 4K)
+- `--start-frame <N>`, `--end-frame <N>`: Inclusive frame range (0-based)
+- `--progress <human|json>`: Progress bar on stderr, or NDJSON events on stdout
+- `-t, --threads <NUM>`: Worker threads (default: all cores)
 
-### Cropping
+### Value arrays
 
-Crop images using FFmpeg-style crop parameters:
+Adjustment flags accept a single value or a comma-separated array. Array values
+become keyframes spread evenly across the clip, and the rendered curve passes
+through every value:
 
 ```bash
-# Crop with pixel coordinates (width:height:x:y)
-lapsify -i images/ -o output/ --crop="600:400:100:50" -f mp4
+# Ramp exposure from -1 EV to +1 EV
+lapsify -i images/ -o out/ -e "-1.0,1.0" -f mp4
 
-# Crop with percentage coordinates
-lapsify -i images/ -o output/ --crop="50%:50%:10%:10%" -f mp4
-
-# Crop from right/bottom using negative offsets
-lapsify -i images/ -o output/ --crop="600:400:-100:-100" -f mp4
+# Brightness dips mid-clip
+lapsify -i images/ -o out/ -b "0,20,-10,0" -f mp4
 ```
 
-**Crop Format:** `width:height:x:y`
-- **Width/Height**: Output dimensions in pixels or percentages
-- **X/Y**: Offset coordinates in pixels or percentages
-- **Percentages**: Values like '50%' are calculated relative to image dimensions
-- **Negative Offsets**: Useful for cropping from the right or bottom edges
+### Project files
 
-### Manual Offsets
+A project file is the full description of a render — the same model the CLI
+flags build internally, with per-frame keyframe control:
 
-Apply X/Y offsets to the crop window for manual stabilization, panning, and positioning:
-
-```bash
-# Static positioning (no movement)
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
-
-# Horizontal panning (left to right)
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
-
-# Vertical panning (bottom to top)
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x 0 --offset-y="0,-30,-60,-90" -f mp4
-
-# Diagonal panning
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,40,60" --offset-y="0,-10,-20,-30" -f mp4
-
-# Stabilization (compensate for camera shake)
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,5,-5,0" --offset-y="0,-3,3,0" -f mp4
-
-# Smooth circular movement
-lapsify -i images/ -o output/ --crop="3000:2400:-100:-100" --offset-x="0,20,0,-20,0" --offset-y="0,0,20,0,-20" -f mp4
+```json
+{
+  "version": 1,
+  "input": "frames/",
+  "color": {
+    "exposure": [
+      { "frame": 0, "value": -0.5 },
+      { "frame": 120, "value": 1.0, "easing": "linear" },
+      { "frame": 300, "value": 0.0 }
+    ],
+    "contrast": 1.1
+  },
+  "crop": {
+    "x": [ { "frame": 0, "value": 0.0 }, { "frame": 300, "value": 0.25 } ],
+    "y": 0.0,
+    "width": [ { "frame": 0, "value": 1.0 }, { "frame": 300, "value": 0.5 } ],
+    "height": [ { "frame": 0, "value": 1.0 }, { "frame": 300, "value": 0.5 } ]
+  },
+  "export": {
+    "output": "out/",
+    "format": "mp4",
+    "fps": 24,
+    "quality": 18,
+    "codec": "h265",
+    "resolution": "4K"
+  }
+}
 ```
 
-**Offset Features:**
-- **Crop Requirement**: Only works when `--crop` parameter is specified
-- **Interpolation**: Supports arrays for smooth transitions across frames
-- **Pixel Precision**: Direct pixel-level control over crop window position
-- **Parallel Processing**: All frames processed concurrently for maximum speed
-- **Early Boundary Validation**: Program validates all offset values against image boundaries before processing begins and crashes immediately if any offset would place crop window outside image boundaries
-- **Use Cases**: Stabilization, panning, tracking, and creative camera movements
+- Every adjustment is either a constant (`"contrast": 1.1`) or a keyframe list.
+- Keyframe easings: `smooth` (default), `linear`, `hold`, `ease_in`,
+  `ease_out`, `ease_in_out`.
+- The crop window uses normalized coordinates (0..1 fractions of the source
+  image), so a project is resolution-independent. Animating `width`/`height`
+  zooms; animating `x`/`y` pans.
+- Flags passed alongside `--project` override the file's values.
 
-**Note**: The program validates all offset values against image boundaries before processing begins. If any offset would cause the crop window to extend beyond the image boundaries, the program crashes immediately with a clear error message. This prevents creating videos with black borders or missing content.
-
-### Parameter Arrays
-
-You can provide arrays of values for smooth transitions:
+### Cropping (flags)
 
 ```bash
-# Gradual exposure change from -1 to +1 EV
-lapsify -i images/ -o output/ -e "-1.0,1.0" -f mp4
+# Pixel window: 600x400 at (100, 50)
+lapsify -i images/ -o out/ --crop "600:400:100:50" -f mp4
 
-# Multiple brightness points
-lapsify -i images/ -o output/ -b "0,20,-10,0" -f mp4
+# Percentages need the % sign
+lapsify -i images/ -o out/ --crop "50%:50%:25%:25%" -f mp4
 
-# Complex contrast curve
-lapsify -i images/ -o output/ -c "1.0,1.5,0.8,1.2" -f mp4
+# Negative pixel values anchor to the right/bottom edge
+lapsify -i images/ -o out/ --crop "600:400:-100:-50" -f mp4
+
+# Animated offsets: pan the window while rendering
+lapsify -i images/ -o out/ --crop "3000:2400:0:0" --offset-x "0,150" -f mp4
 ```
 
-### Important Note: Negative Values
+Bare numbers are always pixels; use `%` for percentages. The crop window is
+validated against every frame before processing starts.
 
-When using negative values in command-line arguments, you must use the `=` syntax to separate the argument name from the value:
+### Driving lapsify from another program
 
 ```bash
-# ✅ Correct - use equals sign for negative values
-lapsify --exposure="-1,0.2" --fps 20
-
-# ❌ Incorrect - will be interpreted as separate flags
-lapsify --exposure "-1,0.2" --fps 20
+lapsify -i frames/ -o out/ -f mp4 --progress json
 ```
 
-This is because the command-line parser interprets values starting with `-` as separate flags unless explicitly bound with `=`.
-
-### Examples
-
-```bash
-# Create a video with increased brightness and contrast
-lapsify -i photos/ -o video/ -b 20 -c 1.2 -f mp4 -r 30
-
-# Process with exposure ramping
-lapsify -i photos/ -o processed/ -e "-0.5,1.0" -f jpg
-
-# High-quality 4K video
-lapsify -i photos/ -o video/ -f mp4 -r 24 -q 18 --resolution 4K
-
-# Use specific number of threads for processing
-lapsify -i photos/ -o video/ -f mp4 -t 8
-
-# Crop to center 50% of the image
-lapsify -i photos/ -o video/ --crop="50%:50%:25%:25%" -f mp4
-
-# Crop from right side (remove 200 pixels from right)
-lapsify -i photos/ -o video/ --crop="600:600:0:0" -f mp4
-
-# Manual offset with interpolated movement
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,10,-5,0" --offset-y="0,5,-10,0" -f mp4
-
-# Single offset for static positioning
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x 10 --offset-y -5 -f mp4
-
-# Horizontal panning effect
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,50,100,150" --offset-y 0 -f mp4
-
-# Stabilization with small corrections
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="0,3,-3,0" --offset-y="0,-2,2,0" -f mp4
-
-# Large offset (will crash with boundary error)
-lapsify -i photos/ -o video/ --crop="3000:2400:-100:-100" --offset-x="1000" --offset-y="500" -f mp4
+```
+{"event":"start","total_frames":5,"width":320,"height":240}
+{"event":"frame","index":0,"done":1,"total":5}
+...
+{"event":"done","output":"out/timelapse.mp4","elapsed_ms":156}
 ```
 
-## Performance
+Stdout carries only NDJSON events; all human-readable output goes to stderr.
 
-Lapsify uses parallel processing to speed up image processing:
+## Library usage
 
-- **Auto-detection**: By default, uses all available CPU cores
-- **Manual control**: Use `-t/--threads` to specify exact number of threads
-- **Progress tracking**: Real-time progress updates during processing
-- **Memory efficient**: Processes images in parallel without excessive memory usage
+The `lapsify` crate exposes the engine directly:
 
-### Threading Examples
+```rust
+use lapsify::{Project, render_frame};
 
-```bash
-# Use auto-detected number of threads (recommended)
-lapsify -i photos/ -o video/ -f mp4
-
-# Use 4 threads specifically
-lapsify -i photos/ -o video/ -f mp4 -t 4
-
-# Use single thread (for debugging or low-resource systems)
-lapsify -i photos/ -o video/ -f mp4 -t 1
+let project = Project::from_json_file("project.json".as_ref())?;
+let frame = render_frame(image::open("frames/0001.jpg")?, &project, 42)?;
 ```
 
 ## Supported Image Formats
@@ -222,7 +189,7 @@ lapsify -i photos/ -o video/ -f mp4 -t 1
 - TIFF (.tiff, .tif)
 - BMP (.bmp)
 - WebP (.webp)
-- ⚠️ Pending: RAW formats (.raw, .cr2, .nef, .arw)
+- ⚠️ Pending: RAW formats (.cr2, .nef, .arw)
 
 ## License
 

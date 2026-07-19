@@ -1,12 +1,24 @@
+pub mod ffmpeg;
 pub mod images;
 pub mod video;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use colored::*;
-use image::GenericImageView;
+use crossbeam_channel::{bounded, Receiver};
+use image::RgbImage;
+use rayon::prelude::*;
 
 use crate::error::{LapsifyError, Result};
+use crate::progress::{ProgressEvent, ProgressReporter};
+use crate::project::Project;
+use crate::render::render_frame;
+
+/// A consumer of rendered frames. Frames arrive strictly in order.
+pub trait FrameSink: Send {
+    fn write_frame(&mut self, index: usize, frame: &RgbImage) -> Result<()>;
+    fn finish(self: Box<Self>) -> Result<()>;
+}
 
 pub fn parse_resolution(resolution: &str) -> Result<(u32, u32)> {
     let res_str = match resolution.to_lowercase().as_str() {
@@ -33,61 +45,78 @@ pub fn parse_resolution(resolution: &str) -> Result<(u32, u32)> {
     Ok((width, height))
 }
 
-/// Validate the target resolution against the first image's aspect ratio and
-/// compute the output dimensions (even-sized for H.264 compatibility).
-pub fn validate_resolution_proportion(
-    image_files: &[PathBuf],
-    target_resolution: Option<&str>,
-) -> Result<Option<(u32, u32)>> {
-    let Some(res) = target_resolution else {
-        return Ok(None);
-    };
-    let Some(first_image_path) = image_files.first() else {
-        return Ok(None);
-    };
+/// Render frames in parallel and deliver them to the sink strictly in order.
+///
+/// Rendering fans out over rayon; a bounded channel provides backpressure and
+/// a dedicated writer thread reorders results (work-stealing keeps in-flight
+/// indices close together, so the reorder buffer stays small).
+pub fn render_ordered(
+    files: &[PathBuf],
+    project: &Project,
+    start_idx: usize,
+    prepare: impl Fn(RgbImage) -> RgbImage + Sync,
+    sink: Box<dyn FrameSink>,
+    reporter: &ProgressReporter,
+) -> Result<()> {
+    let total = files.len();
+    let (tx, rx) = bounded::<(usize, RgbImage)>(2 * rayon::current_num_threads());
 
-    let img = image::open(first_image_path)?;
-    let (original_width, original_height) = img.dimensions();
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(move || deliver_ordered(rx, sink, reporter, total));
 
-    let (target_width, target_height) = parse_resolution(res)?;
+        let produced =
+            files
+                .par_iter()
+                .enumerate()
+                .try_for_each_with(tx, |tx, (i, path)| -> Result<()> {
+                    let img = image::open(path)?;
+                    let frame = render_frame(img, project, (start_idx + i) as u32)?;
+                    let frame = prepare(frame.into_rgb8());
+                    tx.send((i, frame))
+                        .map_err(|_| LapsifyError::message("frame writer terminated early"))?;
+                    Ok(())
+                });
 
-    let original_ratio = original_width as f32 / original_height as f32;
-    let mut output_width = (target_height as f32 * original_ratio) as u32;
-    if output_width % 2 != 0 {
-        output_width += 1;
+        let written = writer
+            .join()
+            .map_err(|_| LapsifyError::message("frame writer thread panicked"))?;
+
+        // The writer error is the root cause when both sides fail (producers
+        // only see a closed channel).
+        written.and(produced)
+    })
+}
+
+fn deliver_ordered(
+    rx: Receiver<(usize, RgbImage)>,
+    mut sink: Box<dyn FrameSink>,
+    reporter: &ProgressReporter,
+    total: usize,
+) -> Result<()> {
+    let mut pending: BTreeMap<usize, RgbImage> = BTreeMap::new();
+    let mut next = 0usize;
+
+    for (index, frame) in rx.iter() {
+        pending.insert(index, frame);
+        while let Some(ready) = pending.remove(&next) {
+            sink.write_frame(next, &ready)?;
+            next += 1;
+            reporter.report(ProgressEvent::Frame {
+                index: next - 1,
+                done: next,
+                total,
+            });
+        }
     }
 
-    let mut output_height = target_height;
-    if output_height % 2 != 0 {
-        output_height += 1;
+    if next != total {
+        // A producer failed; its error is reported on the rayon side.
+        return Err(LapsifyError::message(format!(
+            "only {next} of {total} frames were rendered"
+        )));
     }
 
-    let target_ratio = target_width as f32 / target_height as f32;
-    let ratio_difference = (original_ratio - target_ratio).abs();
-    let tolerance = 0.05;
-
-    if ratio_difference > tolerance {
-        println!(
-            "{}: Original aspect ratio ({:.2}:1) differs from target ({:.2}:1). This may cause distortion. {}: {}x{}",
-            "Warning".yellow(),
-            original_ratio,
-            target_ratio,
-            "Output resolution".yellow(),
-            output_width,
-            output_height
-        );
-    } else {
-        println!(
-            "{}: Aspect ratio validation passed ({:.2}:1). {}: {}x{}",
-            "Resolution".green(),
-            original_ratio,
-            "Output resolution".green(),
-            output_width,
-            output_height
-        );
-    }
-
-    Ok(Some((output_width, output_height)))
+    sink.finish()
 }
 
 #[cfg(test)]
