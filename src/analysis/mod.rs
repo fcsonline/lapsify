@@ -8,6 +8,7 @@
 
 pub mod deflicker;
 pub mod holygrail;
+pub mod keyframes;
 pub mod luminance;
 
 pub use deflicker::DeflickerLayer;

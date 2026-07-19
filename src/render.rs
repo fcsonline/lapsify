@@ -91,6 +91,7 @@ mod tests {
             version: PROJECT_VERSION,
             input: PathBuf::from("frames"),
             frame_range: None,
+            interpolation: Default::default(),
             color: ColorGrade::default(),
             crop: None,
             export: {

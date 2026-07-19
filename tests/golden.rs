@@ -59,6 +59,7 @@ fn test_project() -> Project {
         version: PROJECT_VERSION,
         input: PathBuf::from("unused"),
         frame_range: None,
+        interpolation: Default::default(),
         color: ColorGrade {
             exposure: Curve::Keyframed(vec![Keyframe::new(0, -0.5), Keyframe::new(4, 0.8)]),
             brightness: Curve::Constant(5.0),

@@ -27,6 +27,10 @@ pub enum ProgressEvent {
         done: usize,
         total: usize,
     },
+    /// Suggested keyframe positions from the keyframe wizard.
+    KeyframeSuggestion {
+        frames: Vec<u32>,
+    },
     /// One completed deflicker correction pass.
     DeflickerPass {
         pass: u32,
@@ -82,6 +86,9 @@ impl ProgressReporter {
                         output.display(),
                         *elapsed_ms as f64 / 1000.0
                     );
+                }
+                ProgressEvent::KeyframeSuggestion { frames } => {
+                    bar.suspend(|| eprintln!("Suggested keyframes at frames: {frames:?}"));
                 }
                 ProgressEvent::DeflickerPass {
                     pass,

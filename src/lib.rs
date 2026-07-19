@@ -10,6 +10,7 @@ pub mod progress;
 pub mod project;
 pub mod render;
 pub mod source;
+pub mod timeline;
 
 pub use crop::{CropRect, CropTrack};
 pub use curve::{Curve, Easing, Keyframe};

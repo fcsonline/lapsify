@@ -21,6 +21,10 @@ pub struct Project {
     /// Inclusive frame range to process, 0-based. None = all frames.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_range: Option<(usize, usize)>,
+    /// How color curves interpolate between keyframes: by frame index, or by
+    /// capture time (needs timestamps from `analyze holygrail`).
+    #[serde(default)]
+    pub interpolation: InterpolationMode,
     #[serde(default)]
     pub color: ColorGrade,
     /// Crop window over time in normalized source-image coordinates.
@@ -30,6 +34,14 @@ pub struct Project {
     /// Machine-generated analysis data, written back by `lapsify analyze`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analysis: Option<Analysis>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterpolationMode {
+    #[default]
+    Frame,
+    Time,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +287,7 @@ mod tests {
             version: PROJECT_VERSION,
             input: PathBuf::from("frames"),
             frame_range: None,
+            interpolation: Default::default(),
             color: ColorGrade::default(),
             crop: None,
             export: ExportSettings::new(PathBuf::from("out")),

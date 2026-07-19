@@ -106,6 +106,35 @@ fn build_command() -> Command {
         ),
     )
     .subcommand(
+        Command::new("keyframes")
+            .about("Keyframe utilities")
+            .subcommand_required(true)
+            .subcommand(
+                render_args(Command::new("suggest").about(
+                    "Suggest keyframe positions from the luminance progression (denser where brightness changes fast)",
+                ))
+                .arg(
+                    Arg::new("count")
+                        .long("count")
+                        .value_name("N")
+                        .help("Exact number of keyframes to place"),
+                )
+                .arg(
+                    Arg::new("density")
+                        .long("density")
+                        .value_name("PER_EV")
+                        .help("Keyframes per EV of total luminance travel (when --count is not given)")
+                        .default_value("1.5"),
+                )
+                .arg(
+                    Arg::new("apply")
+                        .long("apply")
+                        .num_args(0)
+                        .help("Insert the suggested keyframes into the exposure curve at their current values (visually a no-op that gives an editor handles to grab)"),
+                ),
+            ),
+    )
+    .subcommand(
         Command::new("analyze")
             .about("Analysis passes that write results back into the project file")
             .subcommand_required(true)
@@ -446,6 +475,7 @@ fn build_project_inner(matches: &ArgMatches) -> Result<Project> {
                 version: PROJECT_VERSION,
                 input: PathBuf::from(input),
                 frame_range: None,
+                interpolation: Default::default(),
                 color: ColorGrade::default(),
                 crop: None,
                 export: ExportSettings::new(PathBuf::from(output)),
@@ -627,6 +657,10 @@ pub fn run() -> Result<()> {
             _ => unreachable!("subcommand_required"),
         },
         Some(("deflicker", sub)) => run_deflicker_cmd(sub),
+        Some(("keyframes", sub)) => match sub.subcommand() {
+            Some(("suggest", suggest)) => run_keyframes_suggest(suggest),
+            _ => unreachable!("subcommand_required"),
+        },
         Some(("analyze", sub)) => match sub.subcommand() {
             Some(("luminance", lum)) => run_analyze_luminance(lum),
             Some(("holygrail", hg)) => run_analyze_holygrail(hg),
@@ -706,6 +740,84 @@ fn run_analyze_luminance(matches: &ArgMatches) -> Result<()> {
         output: written,
         elapsed_ms: start.elapsed().as_millis() as u64,
     });
+    Ok(())
+}
+
+fn run_keyframes_suggest(matches: &ArgMatches) -> Result<()> {
+    use crate::analysis::keyframes::{suggest_keyframes, SuggestOptions};
+    use crate::curve::Keyframe;
+    use crate::progress::ProgressEvent;
+
+    let mut project = build_project(matches)?;
+    project.validate()?;
+
+    let source_luma = project
+        .analysis
+        .as_ref()
+        .and_then(|a| a.source_luminance.as_ref())
+        .map(|s| s.values.clone())
+        .ok_or_else(|| {
+            LapsifyError::message(
+                "Keyframe suggestion needs source luminance; run `lapsify analyze luminance --project <FILE>` first",
+            )
+        })?;
+    let holy_grail = project.analysis.as_ref().and_then(|a| a.holy_grail.clone());
+
+    let opts = SuggestOptions {
+        count: matches
+            .get_one::<String>("count")
+            .map(|s| s.parse::<usize>())
+            .transpose()
+            .map_err(|_| LapsifyError::message("Invalid count value"))?,
+        density: matches
+            .get_one::<String>("density")
+            .unwrap()
+            .parse::<f32>()
+            .map_err(|_| LapsifyError::message("Invalid density value"))?,
+    };
+
+    let reporter = match matches.get_one::<String>("progress").unwrap().as_str() {
+        "json" => ProgressReporter::json(),
+        _ => ProgressReporter::human(),
+    };
+
+    let frames = suggest_keyframes(&source_luma, holy_grail.as_ref(), &opts)?;
+    reporter.report(ProgressEvent::KeyframeSuggestion {
+        frames: frames.clone(),
+    });
+
+    if matches.get_flag("apply") {
+        let project_path = matches.get_one::<String>("project").ok_or_else(|| {
+            LapsifyError::message("--apply writes into the project file; pass --project <FILE>")
+        })?;
+
+        // Insert keyframes at the curve's current sampled values: the render
+        // is unchanged, but an editor now has handles at the right places.
+        // Existing keyframes within 2 frames of a suggestion are kept as-is.
+        let existing: Vec<u32> = match &project.color.exposure {
+            Curve::Keyframed(kfs) => kfs.iter().map(|k| k.frame).collect(),
+            Curve::Constant(_) => Vec::new(),
+        };
+        let mut keyframes: Vec<Keyframe> = match &project.color.exposure {
+            Curve::Keyframed(kfs) => kfs.clone(),
+            Curve::Constant(_) => Vec::new(),
+        };
+        for &frame in &frames {
+            if existing.iter().any(|&e| e.abs_diff(frame) <= 2) {
+                continue;
+            }
+            keyframes.push(Keyframe::new(frame, project.color.exposure.sample(frame)));
+        }
+        keyframes.sort_by_key(|k| k.frame);
+        project.color.exposure = Curve::Keyframed(keyframes);
+
+        project.save_atomic(Path::new(project_path))?;
+        reporter.report(ProgressEvent::Done {
+            output: PathBuf::from(project_path),
+            elapsed_ms: 0,
+        });
+    }
+
     Ok(())
 }
 

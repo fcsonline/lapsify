@@ -55,9 +55,16 @@ impl Curve {
     /// Sample the curve at a frame. Frames outside the keyframe range clamp
     /// to the first/last keyframe value.
     pub fn sample(&self, frame: u32) -> f32 {
+        self.sample_mapped(frame, |f| f as f32)
+    }
+
+    /// Sample the curve with an arbitrary frame-to-position mapping. With a
+    /// capture-time mapping, interpolation happens in time space, which is
+    /// what irregular shooting intervals need.
+    pub fn sample_mapped(&self, frame: u32, x_of: impl Fn(u32) -> f32) -> f32 {
         match self {
             Curve::Constant(v) => *v,
-            Curve::Keyframed(keyframes) => sample_keyframes(keyframes, frame),
+            Curve::Keyframed(keyframes) => sample_keyframes(keyframes, frame, x_of),
         }
     }
 
@@ -108,7 +115,7 @@ impl Curve {
     }
 }
 
-fn sample_keyframes(keyframes: &[Keyframe], frame: u32) -> f32 {
+fn sample_keyframes(keyframes: &[Keyframe], frame: u32, x_of: impl Fn(u32) -> f32) -> f32 {
     match keyframes {
         [] => 0.0,
         [only] => only.value,
@@ -126,7 +133,14 @@ fn sample_keyframes(keyframes: &[Keyframe], frame: u32) -> f32 {
             let i = keyframes.partition_point(|k| k.frame <= frame) - 1;
             let k0 = &keyframes[i];
             let k1 = &keyframes[i + 1];
-            let t = (frame - k0.frame) as f32 / (k1.frame - k0.frame) as f32;
+            let x0 = x_of(k0.frame);
+            let x1 = x_of(k1.frame);
+            let span = x1 - x0;
+            let t = if span > 0.0 {
+                ((x_of(frame) - x0) / span).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
 
             match k0.easing {
                 Easing::Hold => k0.value,
@@ -138,8 +152,8 @@ fn sample_keyframes(keyframes: &[Keyframe], frame: u32) -> f32 {
                 }
                 Easing::EaseInOut => lerp(k0.value, k1.value, t * t * (3.0 - 2.0 * t)),
                 Easing::Smooth => {
-                    let tangents = monotone_tangents(keyframes);
-                    hermite(k0, k1, tangents[i], tangents[i + 1], t)
+                    let tangents = monotone_tangents(keyframes, &x_of);
+                    hermite(k0, k1, tangents[i], tangents[i + 1], t, span)
                 }
             }
         }
@@ -152,12 +166,13 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 /// Fritsch-Carlson tangents for monotone cubic interpolation: the resulting
 /// spline passes through every keyframe and never overshoots the interval
-/// between neighboring keyframe values.
-fn monotone_tangents(keyframes: &[Keyframe]) -> Vec<f32> {
+/// between neighboring keyframe values. Spacing comes from the position
+/// mapping, so irregular capture intervals produce correct tangents.
+fn monotone_tangents(keyframes: &[Keyframe], x_of: &impl Fn(u32) -> f32) -> Vec<f32> {
     let n = keyframes.len();
     let mut secants = Vec::with_capacity(n - 1);
     for pair in keyframes.windows(2) {
-        let dx = (pair[1].frame - pair[0].frame) as f32;
+        let dx = (x_of(pair[1].frame) - x_of(pair[0].frame)).max(f32::EPSILON);
         secants.push((pair[1].value - pair[0].value) / dx);
     }
 
@@ -191,8 +206,7 @@ fn monotone_tangents(keyframes: &[Keyframe]) -> Vec<f32> {
     tangents
 }
 
-fn hermite(k0: &Keyframe, k1: &Keyframe, m0: f32, m1: f32, t: f32) -> f32 {
-    let h = (k1.frame - k0.frame) as f32;
+fn hermite(k0: &Keyframe, k1: &Keyframe, m0: f32, m1: f32, t: f32, h: f32) -> f32 {
     let t2 = t * t;
     let t3 = t2 * t;
     let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;

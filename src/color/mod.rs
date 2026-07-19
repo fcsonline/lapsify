@@ -65,11 +65,13 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 impl<'a> ColorParams<'a> {
     pub fn at_frame(project: &'a Project, frame: u32) -> Self {
         let color = &project.color;
+        let timeline = crate::timeline::Timeline::of(project);
+        let sample = |curve: &crate::curve::Curve| curve.sample_mapped(frame, |f| timeline.x(f));
 
         // Effective exposure is the sum of independent layers: the
         // user-keyframed curve plus machine-generated compensation. Each
         // layer is bookkept separately so analyses stay re-runnable.
-        let mut exposure = color.exposure.sample(frame);
+        let mut exposure = sample(&color.exposure);
         if let Some(ref analysis) = project.analysis {
             if let Some(ref hg) = analysis.holy_grail {
                 exposure += hg.effective(frame as usize);
@@ -81,17 +83,17 @@ impl<'a> ColorParams<'a> {
 
         Self {
             exposure,
-            temperature: color.temperature.sample(frame),
-            tint: color.tint.sample(frame),
-            brightness: color.brightness.sample(frame),
-            contrast: color.contrast.sample(frame),
-            highlights: color.highlights.sample(frame),
-            shadows: color.shadows.sample(frame),
-            whites: color.whites.sample(frame),
-            blacks: color.blacks.sample(frame),
-            gamma: color.gamma.sample(frame),
-            saturation: color.saturation.sample(frame),
-            vibrance: color.vibrance.sample(frame),
+            temperature: sample(&color.temperature),
+            tint: sample(&color.tint),
+            brightness: sample(&color.brightness),
+            contrast: sample(&color.contrast),
+            highlights: sample(&color.highlights),
+            shadows: sample(&color.shadows),
+            whites: sample(&color.whites),
+            blacks: sample(&color.blacks),
+            gamma: sample(&color.gamma),
+            saturation: sample(&color.saturation),
+            vibrance: sample(&color.vibrance),
             tone_curve: color.tone_curve.as_ref(),
         }
     }
