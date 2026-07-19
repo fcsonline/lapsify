@@ -41,6 +41,7 @@ pub struct StudioApp {
 
     // Branding
     pub logo: Option<egui::TextureHandle>,
+    pub show_about: bool,
 
     // Debug self-test state
     selftest_started: bool,
@@ -78,6 +79,7 @@ impl StudioApp {
             show_compensation: false,
             show_deflicker: false,
             logo,
+            show_about: false,
             selftest_started: false,
         }
     }
@@ -305,12 +307,72 @@ impl StudioApp {
             }
         }
     }
+
+    pub fn save_as(&mut self) {
+        let Some(doc) = &mut self.doc else { return };
+        let dialog = rfd::FileDialog::new()
+            .add_filter("Lapsify project", &["json"])
+            .set_file_name("project.json");
+        if let Some(path) = dialog.save_file() {
+            doc.path = Some(path);
+            match doc.save() {
+                Ok(path) => self.status = format!("Saved {}", path.display()),
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        }
+    }
+
+    pub fn reset_adjustments(&mut self) {
+        if let Some(doc) = &mut self.doc {
+            doc.project.color = Default::default();
+            doc.dirty = true;
+            self.preview_dirty = true;
+            self.status = "All adjustments reset".to_string();
+        }
+    }
+
+    pub fn reset_current_curve(&mut self) {
+        let param = self.selected_param;
+        if let Some(doc) = &mut self.doc {
+            *doc.curve_mut(param) = Curve::Constant(param.neutral());
+            doc.dirty = true;
+            self.preview_dirty = true;
+            self.status = format!("{} reset", param.label());
+        }
+    }
+
+    pub fn clear_analysis(&mut self) {
+        if let Some(doc) = &mut self.doc {
+            doc.project.analysis = None;
+            doc.dirty = true;
+            self.preview_dirty = true;
+            self.status = "Analysis layers cleared".to_string();
+        }
+    }
+
+    /// Open the frames folder in the system file manager.
+    pub fn reveal_frames_folder(&mut self) {
+        let Some(doc) = &self.doc else { return };
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(target_os = "linux")]
+        let opener = "xdg-open";
+        #[cfg(target_os = "windows")]
+        let opener = "explorer";
+        if let Err(e) = std::process::Command::new(opener)
+            .arg(&doc.project.input)
+            .spawn()
+        {
+            self.error = Some(format!("Could not open folder: {e}"));
+        }
+    }
 }
 
 impl eframe::App for StudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.pump_events(ctx);
 
+        panels::menu::show(self, ctx);
         panels::toolbar::show(self, ctx);
         panels::adjustments::show(self, ctx);
         panels::timeline::show(self, ctx);
