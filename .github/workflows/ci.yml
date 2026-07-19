@@ -30,8 +30,3 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
-# NOTE: This is the CI workflow for the repository. It lives here instead of
-# .github/workflows/ci.yml only because the branch was pushed with a GitHub
-# token lacking the `workflow` scope. To activate it:
-#   git mv ci/github-ci.yml .github/workflows/ci.yml && rmdir ci
-# and push from a terminal with workflow-scoped credentials.
