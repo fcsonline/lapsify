@@ -98,6 +98,7 @@ mod tests {
                 export.format = "jpg".to_string();
                 export
             },
+            analysis: None,
         }
     }
 

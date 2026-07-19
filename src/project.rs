@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::Analysis;
 use crate::color::ToneCurve;
 use crate::crop::CropTrack;
 use crate::curve::Curve;
@@ -26,6 +27,9 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crop: Option<CropTrack>,
     pub export: ExportSettings,
+    /// Machine-generated analysis data, written back by `lapsify analyze`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<Analysis>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +172,16 @@ impl Project {
             .map_err(|e| LapsifyError::message(format!("Failed to serialize project: {e}")))
     }
 
+    /// Write the project to a file atomically (temp file + rename), so a
+    /// crash mid-write never corrupts an existing project.
+    pub fn save_atomic(&self, path: &Path) -> Result<()> {
+        let json = self.to_json_pretty()?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, &json).map_err(|e| LapsifyError::io(&tmp, e))?;
+        fs::rename(&tmp, path).map_err(|e| LapsifyError::io(path, e))?;
+        Ok(())
+    }
+
     pub fn is_video_output(&self) -> bool {
         matches!(self.export.format.as_str(), "mp4" | "mov" | "avi")
     }
@@ -264,6 +278,7 @@ mod tests {
             color: ColorGrade::default(),
             crop: None,
             export: ExportSettings::new(PathBuf::from("out")),
+            analysis: None,
         }
     }
 

@@ -20,6 +20,13 @@ pub enum ProgressEvent {
         done: usize,
         total: usize,
     },
+    /// Per-frame luminance measurement from an analysis pass.
+    Luma {
+        frame: usize,
+        value: f32,
+        done: usize,
+        total: usize,
+    },
     Done {
         output: PathBuf,
         elapsed_ms: u64,
@@ -59,7 +66,7 @@ impl ProgressReporter {
                     bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
                     bar.enable_steady_tick(Duration::from_millis(100));
                 }
-                ProgressEvent::Frame { done, .. } => {
+                ProgressEvent::Frame { done, .. } | ProgressEvent::Luma { done, .. } => {
                     bar.set_position(*done as u64);
                 }
                 ProgressEvent::Done { output, elapsed_ms } => {

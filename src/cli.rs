@@ -54,6 +54,42 @@ fn build_command() -> Command {
                 "Print the project JSON that the given flags produce",
             ))),
     )
+    .subcommand(
+        Command::new("analyze")
+            .about("Analysis passes that write results back into the project file")
+            .subcommand_required(true)
+            .subcommand(
+                render_args(
+                    Command::new("luminance")
+                        .about("Measure per-frame mean linear luminance across the sequence"),
+                )
+                .arg(
+                    Arg::new("region")
+                        .long("region")
+                        .value_name("X,Y,W,H")
+                        .help("Restrict measurement to a normalized source-image region (0..1 fractions)"),
+                )
+                .arg(
+                    Arg::new("measure-dim")
+                        .long("measure-dim")
+                        .value_name("PIXELS")
+                        .help("Downscale the long edge to this size before measuring")
+                        .default_value("256"),
+                )
+                .arg(
+                    Arg::new("developed")
+                        .long("developed")
+                        .num_args(0)
+                        .help("Measure developed frames (all grading applied) instead of source frames"),
+                )
+                .arg(
+                    Arg::new("no-write")
+                        .long("no-write")
+                        .num_args(0)
+                        .help("Compute and emit events without writing the result into the project file"),
+                ),
+            ),
+    )
 }
 
 /// The shared flag set accepted at the top level (legacy), by `render`, by
@@ -309,6 +345,7 @@ fn build_project(matches: &ArgMatches) -> Result<Project> {
                 color: ColorGrade::default(),
                 crop: None,
                 export: ExportSettings::new(PathBuf::from(output)),
+                analysis: None,
             }
         }
     };
@@ -485,6 +522,10 @@ pub fn run() -> Result<()> {
             Some(("dump", dump)) => run_project_dump(dump),
             _ => unreachable!("subcommand_required"),
         },
+        Some(("analyze", sub)) => match sub.subcommand() {
+            Some(("luminance", lum)) => run_analyze_luminance(lum),
+            _ => unreachable!("subcommand_required"),
+        },
         Some(_) => unreachable!("unknown subcommand"),
         None => {
             eprintln!(
@@ -493,6 +534,73 @@ pub fn run() -> Result<()> {
             run_render(&matches)
         }
     }
+}
+
+fn run_analyze_luminance(matches: &ArgMatches) -> Result<()> {
+    use crate::analysis::luminance::{measure_luminance, parse_region, LuminanceOptions};
+    use crate::analysis::Analysis;
+    use crate::progress::ProgressEvent;
+
+    let mut project = build_project(matches)?;
+    project.validate()?;
+
+    let opts = LuminanceOptions {
+        region: matches
+            .get_one::<String>("region")
+            .map(|s| parse_region(s))
+            .transpose()?,
+        measure_dim: matches
+            .get_one::<String>("measure-dim")
+            .unwrap()
+            .parse::<u32>()
+            .map_err(|_| LapsifyError::message("Invalid measure-dim value"))?,
+        developed: matches.get_flag("developed"),
+    };
+
+    let reporter = match matches.get_one::<String>("progress").unwrap().as_str() {
+        "json" => ProgressReporter::json(),
+        _ => ProgressReporter::human(),
+    };
+
+    let image_files = list_images(&project.input)?;
+    let (width, height) = scan_dimensions(&image_files)?;
+    reporter.report(ProgressEvent::Start {
+        total_frames: image_files.len(),
+        width,
+        height,
+    });
+
+    let start = Instant::now();
+    let series = measure_luminance(&project, &image_files, &opts, &reporter)?;
+
+    let project_path = matches.get_one::<String>("project").map(PathBuf::from);
+    let written = match (&project_path, matches.get_flag("no-write")) {
+        (Some(path), false) => {
+            let analysis = project.analysis.get_or_insert_with(Analysis::default);
+            if opts.developed {
+                analysis.developed_luminance = Some(series);
+            } else {
+                analysis.source_luminance = Some(series);
+            }
+            project.save_atomic(path)?;
+            path.clone()
+        }
+        _ => {
+            if project_path.is_none() {
+                reporter.report(ProgressEvent::Warning {
+                    message: "no project file given; results were not persisted (use --project)"
+                        .to_string(),
+                });
+            }
+            PathBuf::new()
+        }
+    };
+
+    reporter.report(ProgressEvent::Done {
+        output: written,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    });
+    Ok(())
 }
 
 fn run_project_dump(matches: &ArgMatches) -> Result<()> {

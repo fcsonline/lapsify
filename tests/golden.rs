@@ -77,6 +77,7 @@ fn test_project() -> Project {
             export.format = "png".to_string();
             export
         },
+        analysis: None,
     }
 }
 
