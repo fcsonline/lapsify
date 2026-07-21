@@ -46,7 +46,7 @@ pub fn render_to_images(
         .par_iter()
         .enumerate()
         .map(|(i, image_path)| {
-            let img = image::open(image_path)?;
+            let img = crate::source::load_frame(image_path)?;
 
             // Global frame index keeps curve sampling aligned with the full sequence.
             let global_frame_index = (start_idx + i) as u32;

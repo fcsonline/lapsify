@@ -116,7 +116,7 @@ fn load_thumbnail(path: &Path, measure_dim: u32, cache_dir: Option<&Path>) -> Re
         }
     }
 
-    let img = image::open(path)?;
+    let img = crate::source::load_frame(path)?;
     let thumb = if img.width() > measure_dim || img.height() > measure_dim {
         img.thumbnail(measure_dim, measure_dim)
     } else {

@@ -33,9 +33,16 @@ indicatif = "0.17"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 kamadak-exif = "0.6"
 schemars = "1.2.1"
+rawler = { version = "0.7.2", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+
+[features]
+default = ["raw"]
+# Camera RAW decoding (pure Rust, via rawler). Disable with
+# --no-default-features to cut compile time when RAW input is not needed.
+raw = ["dep:rawler"]

@@ -283,7 +283,15 @@ let frame = render_frame(image::open("frames/0001.jpg")?, &project, 42)?;
 - TIFF (.tiff, .tif)
 - BMP (.bmp)
 - WebP (.webp)
-- ⚠️ Pending: RAW formats (.cr2, .nef, .arw)
+- Camera RAW: .dng, .cr2, .cr3, .nef, .arw, .raf, .orf, .rw2, .pef and more
+
+RAW files are decoded in pure Rust (no external tools) through a neutral
+development pipeline — demosaic, camera white balance, color calibration,
+sRGB — and then graded by lapsify exactly like any other frame. Exposure
+EXIF and capture timestamps are read from the RAW container, so the
+day-to-night and deflicker workflow works on RAW sequences out of the box.
+RAW support is a default cargo feature; build with `--no-default-features`
+to skip it and cut compile time.
 
 ## License
 
