@@ -22,6 +22,21 @@ pub struct FrameExif {
 /// Read the exposure EXIF of one image. Never fails: unreadable or absent
 /// EXIF yields an empty `FrameExif`.
 pub fn read_frame_exif(path: &Path) -> FrameExif {
+    let generic = read_generic_exif(path);
+
+    // Some RAW containers (e.g. ISO-BMFF-based ones) defeat the generic
+    // reader; fall back to the RAW decoder's own metadata.
+    #[cfg(feature = "raw")]
+    if generic == FrameExif::default() && crate::source::is_raw_path(path) {
+        if let Some(raw) = crate::raw::raw_exif(path) {
+            return raw;
+        }
+    }
+
+    generic
+}
+
+fn read_generic_exif(path: &Path) -> FrameExif {
     let Ok(file) = std::fs::File::open(path) else {
         return FrameExif::default();
     };
@@ -88,7 +103,7 @@ pub fn camera_ev(e: &FrameExif) -> Option<f32> {
 
 /// Parse "YYYY:MM:DD HH:MM:SS" into unix epoch milliseconds (naive local
 /// time — relative spacing is all the pipeline needs).
-fn parse_exif_datetime_ms(s: &str) -> Option<i64> {
+pub(crate) fn parse_exif_datetime_ms(s: &str) -> Option<i64> {
     let s = s.trim();
     let bytes: Vec<&str> = s.split([' ', ':']).collect();
     if bytes.len() != 6 {

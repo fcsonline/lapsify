@@ -8,6 +8,8 @@ pub mod exif;
 pub mod export;
 pub mod progress;
 pub mod project;
+#[cfg(feature = "raw")]
+pub mod raw;
 pub mod render;
 pub mod source;
 pub mod timeline;

@@ -69,7 +69,7 @@ pub fn render_ordered(
                 .par_iter()
                 .enumerate()
                 .try_for_each_with(tx, |tx, (i, path)| -> Result<()> {
-                    let img = image::open(path)?;
+                    let img = crate::source::load_frame(path)?;
                     let frame = render_frame(img, project, (start_idx + i) as u32)?;
                     let frame = prepare(frame.into_rgb8());
                     tx.send((i, frame))

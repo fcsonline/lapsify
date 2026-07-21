@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use image::DynamicImage;
+
 use crate::error::{LapsifyError, Result};
 
 pub fn is_image_file(path: &Path) -> bool {
@@ -10,9 +12,38 @@ pub fn is_image_file(path: &Path) -> bool {
             matches!(
                 ext.to_lowercase().as_str(),
                 "jpg" | "jpeg" | "png" | "tiff" | "tif" | "bmp" | "webp"
-            )
+            ) || is_raw_path_ext(ext)
         })
         .unwrap_or(false)
+}
+
+/// Whether the path points at a camera RAW file (always false without the
+/// `raw` feature).
+pub fn is_raw_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(is_raw_path_ext)
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "raw")]
+fn is_raw_path_ext(ext: &str) -> bool {
+    crate::raw::is_raw_extension(ext)
+}
+
+#[cfg(not(feature = "raw"))]
+fn is_raw_path_ext(_ext: &str) -> bool {
+    false
+}
+
+/// Load a source frame: camera RAW files go through the RAW development
+/// pipeline, everything else decodes directly.
+pub fn load_frame(path: &Path) -> Result<DynamicImage> {
+    #[cfg(feature = "raw")]
+    if is_raw_path(path) {
+        return crate::raw::decode_raw(path);
+    }
+    Ok(image::open(path)?)
 }
 
 /// List image files in a directory, sorted by filename.
@@ -40,9 +71,7 @@ pub fn list_images(input_dir: &Path) -> Result<Vec<PathBuf>> {
 pub fn scan_dimensions(image_files: &[PathBuf]) -> Result<(u32, u32)> {
     let mut expected: Option<(u32, u32)> = None;
     for (index, path) in image_files.iter().enumerate() {
-        let (w, h) = image::ImageReader::open(path)
-            .map_err(|e| LapsifyError::io(path, e))?
-            .into_dimensions()?;
+        let (w, h) = frame_dimensions(path)?;
         match expected {
             None => expected = Some((w, h)),
             Some((want_w, want_h)) => {
@@ -60,6 +89,17 @@ pub fn scan_dimensions(image_files: &[PathBuf]) -> Result<(u32, u32)> {
         }
     }
     expected.ok_or_else(|| LapsifyError::message("No image files to scan"))
+}
+
+/// Dimensions a frame will decode to, without decoding pixel data.
+fn frame_dimensions(path: &Path) -> Result<(u32, u32)> {
+    #[cfg(feature = "raw")]
+    if is_raw_path(path) {
+        return crate::raw::raw_dimensions(path);
+    }
+    Ok(image::ImageReader::open(path)
+        .map_err(|e| LapsifyError::io(path, e))?
+        .into_dimensions()?)
 }
 
 /// Select an inclusive frame range from the full sorted file list.
@@ -108,11 +148,22 @@ mod tests {
         assert!(is_image_file(Path::new("a.webp")));
         assert!(!is_image_file(Path::new("a.txt")));
         assert!(!is_image_file(Path::new("a")));
-        // RAW formats are not decodable yet, so they must not be picked up.
-        assert!(!is_image_file(Path::new("a.cr2")));
-        assert!(!is_image_file(Path::new("a.nef")));
-        assert!(!is_image_file(Path::new("a.arw")));
-        assert!(!is_image_file(Path::new("a.raw")));
+
+        // Camera RAW formats decode when the `raw` feature is on.
+        #[cfg(feature = "raw")]
+        {
+            assert!(is_image_file(Path::new("a.cr2")));
+            assert!(is_image_file(Path::new("a.NEF")));
+            assert!(is_image_file(Path::new("a.arw")));
+            assert!(is_image_file(Path::new("a.dng")));
+            assert!(is_raw_path(Path::new("a.dng")));
+            assert!(!is_raw_path(Path::new("a.jpg")));
+        }
+        #[cfg(not(feature = "raw"))]
+        {
+            assert!(!is_image_file(Path::new("a.cr2")));
+            assert!(!is_image_file(Path::new("a.dng")));
+        }
     }
 
     #[test]

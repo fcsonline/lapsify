@@ -1122,7 +1122,7 @@ fn run_preview(matches: &ArgMatches) -> Result<()> {
                 files.len().saturating_sub(1)
             ))
         })?;
-        let mut img = image::open(path)?;
+        let mut img = crate::source::load_frame(path)?;
         if let Some(dim) = max_dim {
             if img.width() > dim || img.height() > dim {
                 img = img.thumbnail(dim, dim);

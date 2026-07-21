@@ -37,7 +37,7 @@ pub fn render_preview(project: &Project, frame: u32, max_dim: Option<u32>) -> Re
         ))
     })?;
 
-    let mut img = image::open(path)?;
+    let mut img = crate::source::load_frame(path)?;
     if let Some(dim) = max_dim {
         if img.width() > dim || img.height() > dim {
             img = img.thumbnail(dim, dim);
